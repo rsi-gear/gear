@@ -16,11 +16,11 @@ vi.mock('../../../src/training/process.js', () => ({ jsonProcess: vi.fn() }))
 describe('Hitch evaluator task-only public CLI boundary', () => {
   const roots: string[] = []
   afterEach(async () => { vi.resetAllMocks(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
-  async function setup() {
+  async function setup(adapter = 'training-tool') {
     const root = await mkdtemp(join(tmpdir(), 'gear-hitch-endpoint-evaluator-')); roots.push(root)
     const store = new TrainingContentStore(root), hash = digestJson('identity'), ref = await store.putJson({ fixture: true })
     const environmentRef = await store.putJson({ hitchEnvironmentIdentity: hash, taskDigest: hash, verifierIdentity: hash })
-    const harness = { harnessId: 'training-tool', revisionIdentity: hash, artifactId: hash }, harnessRef = await store.putJson({ hitch: harness })
+    const harness = { harnessId: adapter, revisionIdentity: hash, artifactId: hash }, harnessRef = await store.putJson({ hitch: harness })
     const model = sealModelVersion({ schemaVersion: 1, hfSnapshotRef: ref, weightsDigest: digestJson('weights'), tokenizerDigest: hash,
       chatTemplateDigest: hash, architecture: 'Tiny', dtype: 'float32', provenanceRef: ref })
     const budgets = { timeoutSeconds: 10, setupTimeoutSeconds: 20, maxConcurrent: 16, maxEpisodeSteps: 16 as const, infrastructureRetries: 0 as const, maxRepairRounds: 1 }
@@ -28,7 +28,7 @@ describe('Hitch evaluator task-only public CLI boundary', () => {
       endpointBinding: fixtureEndpointBinding(model), condition: { schemaVersion: 2, endpointApi: 'chat-completions', partition: 'dev', datasetDigest: ref.digest,
         slots: [{ taskId: 'task', attempt: 1, environmentDigest: environmentRef.digest }], verifierDigest: ref.digest, budgetsDigest: digestJson(budgets),
         runtimeDigest: digestJson(fixtureServiceConfig), protocolDigest: digestJson({ api: 'chat-completions' }), samplingDigest: digestJson(fixtureGeneration),
-        tokenizerDigest: hash, chatTemplateDigest: hash, architecture: 'Tiny', dtype: 'float32' }, datasetRef: ref, harnessCommit: 'a'.repeat(40), harnessAdapter: 'training-tool',
+        tokenizerDigest: hash, chatTemplateDigest: hash, architecture: 'Tiny', dtype: 'float32' }, datasetRef: ref, harnessCommit: 'a'.repeat(40), harnessAdapter: adapter,
       datasetTasks: [{ id: 'task', family: 'task', taskRef: ref, environmentRef }], verifierRef: ref }
     const binding = publicEndpointBinding(request.endpointBinding), evalId = `eval_${'b'.repeat(32)}`, runId = `run_${'c'.repeat(32)}`
     const state = { submits: 0, submitted: [] as readonly string[], command: undefined as { sequence: number; action: string } | undefined,
@@ -36,7 +36,7 @@ describe('Hitch evaluator task-only public CLI boundary', () => {
     vi.mocked(jsonProcess).mockImplementation(async (command, args, payload) => {
       if (command[0] === 'fake-python') return { path: (payload as { destination: string }).destination }
       const argv = args.slice(2), op = argv.slice(0, 2).join(' ')
-      if (op === 'capabilities --json') return { external_endpoint: '1', ordered_eval_control: '2' }
+      if (op === 'capabilities --json') return { external_endpoint_binding: '1', endpoint_harnesses: ['training-tool', 'model-call'], ordered_eval_control: '2' }
       if (op === 'eval control') {
         const control = JSON.parse(await readFile(argv[argv.indexOf('--file') + 1]!, 'utf8'))
         if (state.command && (control.sequence < state.command.sequence || control.sequence === state.command.sequence && control.action !== state.command.action)) throw new TrainingContractError('eval_control_stale', 'newer eval command')
@@ -85,6 +85,18 @@ describe('Hitch evaluator task-only public CLI boundary', () => {
     expect(submitted).toContain('16'); expect(submitted).not.toContain('--gpu')
     expect(calls.some(args => args.includes('local') || args.includes('models') || args.includes('model-node'))).toBe(false)
     expect(vi.mocked(jsonProcess).mock.calls.filter(([command]) => command[0] === 'fake-python').every(([, , payload]) => !(payload as { destination: string }).destination.includes('/models/'))).toBe(true)
+  })
+  it('evaluates the same frozen model-call harness and refuses missing endpoint capability before admission', async () => {
+    const { evaluator, request, state } = await setup('model-call')
+    const invoke = vi.mocked(jsonProcess).getMockImplementation()!
+    vi.mocked(jsonProcess).mockImplementation(async (command, args, payload, timeout) => args.includes('capabilities')
+      ? { external_endpoint_binding: '1', endpoint_harnesses: ['training-tool'], ordered_eval_control: '2' }
+      : invoke(command, args, payload, timeout))
+    await expect(evaluator.evaluate(request, 'text')).rejects.toMatchObject({ code: 'unsupported-evaluation-harness' })
+    expect(state.submits).toBe(0)
+    vi.mocked(jsonProcess).mockImplementation(invoke)
+    expect((await evaluator.evaluate(request, 'text')).complete).toBe(true)
+    expect(state.submitted[state.submitted.indexOf('--harness') + 1]).toMatch(/^model-call@git\+/)
   })
   it('reconciles a lost submit response without reading a mutable endpoint alias or submitting again', async () => {
     const { evaluator, request, state } = await setup(); state.submitReplyLost = true
@@ -140,7 +152,7 @@ describe('Hitch evaluator task-only public CLI boundary', () => {
     let repairCommitted = false, loseReply = true, admissions = 0, pendingReruns = true
     vi.mocked(jsonProcess).mockImplementation(async (command, args, payload, timeout) => {
       const argv = args.slice(2), operation = argv.slice(0, 2).join(' ')
-      if (operation === 'capabilities --json') return { ordered_eval_control: '2', endpoint_evaluation_attempts: '1' }
+      if (operation === 'capabilities --json') return { external_endpoint_binding: '1', endpoint_harnesses: ['training-tool', 'model-call'], ordered_eval_control: '2', endpoint_evaluation_attempts: '1' }
       if (operation === 'eval rerun') {
         const file = argv[argv.indexOf('--endpoint-attempt-file') + 1]!
         expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({ id, parent_id: parentId, endpoint_binding: binding })

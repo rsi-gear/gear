@@ -56,8 +56,9 @@ export async function preflightDeployment(input: TrainingControllerConfigV2, inv
       try {
         const caps = object(capabilities.value)
         record('controller', 'hitch', 'training-binding', ['training_external_binding', 'exact_policy_tokens', 'training_policy_fencing'].every(key => caps[key] === '1'))
-        record('controller', 'hitch', 'external-model-endpoint', caps.external_endpoint === '1')
-        record('controller', 'hitch', 'training-harness', Array.isArray(caps.training_harnesses) && caps.training_harnesses.includes('training-tool'))
+        record('controller', 'hitch', 'external-model-endpoint', caps.external_endpoint_binding === '1')
+        record('controller', 'hitch', 'training-harness', Array.isArray(caps.training_harnesses)
+          && caps.training_harnesses.some(value => value === 'training-tool' || value === 'model-call'))
       } catch (error) { failed('controller', 'hitch', 'controller-capabilities-unavailable', error) }
     } else failed('controller', 'hitch', 'controller-capabilities-unavailable', capabilities.reason)
     if (bridge.status === 'fulfilled') {

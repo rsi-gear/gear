@@ -1,0 +1,526 @@
+From 3c03d9895b70d0300f49602a366c87b587b22602 Mon Sep 17 00:00:00 2001
+From: YehuiTang0316 <tangyehui0316@gmail.com>
+Date: Fri, 20 Nov 2026 08:51:07 +0800
+Subject: [PATCH] feat(training): support fixed model-call text rollouts
+
+---
+ docs/slime-training-binding.zh-CN.md       |   4 +
+ integrations/model-call/cli.js             |  52 ++++++--
+ src/adapters/providers/model-call.ts       |   3 +
+ src/cli/commands/capabilities.ts           |   2 +-
+ src/evals/request.ts                       |   4 +-
+ src/runs/training-runtime.ts               |   2 +-
+ src/workers/remote-harbor-work-spec.ts     |   2 +-
+ test-support/remote-harbor-model.ts        |  10 +-
+ test-support/remote-worker-harbor.ts       |  31 +++--
+ test/model-call-training.test.ts           | 140 +++++++++++++++++++++
+ test/remote-worker-harbor-training.test.ts |   2 +-
+ test/training-binding.test.ts              |   6 +-
+ 12 files changed, 220 insertions(+), 38 deletions(-)
+ create mode 100644 test/model-call-training.test.ts
+
+diff --git a/docs/slime-training-binding.zh-CN.md b/docs/slime-training-binding.zh-CN.md
+index 531bd07..57c85f4 100644
+--- a/docs/slime-training-binding.zh-CN.md
++++ b/docs/slime-training-binding.zh-CN.md
+@@ -26,6 +26,10 @@ hitch eval submit ... \
+ 
+ 固定 `training-tool` runner 使用 Chat Completions，按顺序追加 assistant/tool 消息，不做 compaction、分支或辅助模型调用。退出时提供明确的 terminated/truncated 标记；`hitch training evidence RUN --json` 验证 canonical run 完整性后公开训练身份和终止原因。有效 task reward=0 仍是有效观察。
+ 
++纯文本训练可将 harness 换为同一固定 commit 的 `model-call`，并先核对 `capabilities.training_harnesses` 包含该值。训练模式只发一次 Chat Completions 请求，消息为零个或多个 system 消息加一个 user 消息，不携带工具定义或图像。普通文本 stdin 对应一个 user 消息；结构化输入沿用 `schema_version="1"`，消息 content 为 `[{"type":"input_text","text":"..."}]`。输出 token 预算仅取自训练 binding，拒绝输入里的预算或 reasoning 覆盖；幂等键固定为 `RUN_ID-0`，无 continuation 或重试。完整文本发出 terminated；length 发出 truncated 并以 8 退出；工具响应、取消和接口错误不能成为正常终止样本。provider 事件保留网关 receipt 响应头，精确 token/logprob 仍由 Gear 网关负责。普通 `model-call` 的 Responses、图像输入与外部端点评测行为不变。
++
++`model-call-training.test.js` 使用真实 runner 和 run-scoped proxy，模型响应为 HTTP fixture；`remote-worker-harbor-training.test.js` 的 training-text 模式覆盖打包远程工作图与证据导入，Harbor/Docker 及 canonical bundle 仍为 fixture。这些通过不扩大下文的 GPU 实机认证范围。
++
+ shell 退出后，runner 最多等待一秒排空工具输出；后台服务仍持有输出管道时，返回工具结果并在 runner 存活期间继续排空、丢弃后续日志。这些管道不阻塞 runner 退出，后续日志不追加到已返回的工具观察。runner 退出会关闭管道；需要在退出后继续写日志的服务应将 stdout/stderr 重定向到任务内文件。后台进程最终由 Harbor task 容器清理。
+ 
+ 完整配置、Slime 固定版本与 export patch、checkpoint/replay 语义、GPU 探针和训练操作见 [Gear 训练文档](https://github.com/rsi-gear/gear/blob/codex/slime-model-training/docs/training/README.zh-CN.md)。发布只更新 Gear 的 immutable model 指针，现有 Hitch episode 继续使用原模型 ID。
+diff --git a/integrations/model-call/cli.js b/integrations/model-call/cli.js
+index 5b12130..a9ad2f8 100644
+--- a/integrations/model-call/cli.js
++++ b/integrations/model-call/cli.js
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env node
+-// Trusted no-tools harness. One Responses request, native text/image inputs,
++// Trusted no-tools harness. One model request, native text/image inputs,
+ // no tool executor, retries, subprocesses, browser, or continuation loop.
+ import { randomUUID } from 'node:crypto';
+ 
+@@ -10,9 +10,21 @@ if (process.argv.includes('--version')) {
+ const args = process.argv.slice(2);
+ if (args.length !== 2 || args[0] !== '--model' || !args[1]) throw new Error('Usage: model-call --model MODEL');
+ const model = args[1];
+-const key = process.env.HITCH_LOCAL_MODEL_TOKEN || process.env.OPENAI_API_KEY;
++const training = process.env.HITCH_TRAINING_EXTERNAL === '1';
++const binding = training ? JSON.parse(process.env.HITCH_TRAINING_BINDING || 'null') : null;
++const runId = process.env.HITCH_TRAINING_RUN_ID;
++if (training && (process.env.HITCH_HARBOR_INTERNAL !== '1' || !binding
++  || model !== `training/${binding.binding_id}` || binding.api !== 'chat-completions'
++  || !/^run_[a-f0-9]{32}$/.test(runId || '')
++  || ![binding.max_output_tokens, binding.max_episode_steps].every(n => Number.isSafeInteger(n) && n > 0)
++  || process.env.OPENAI_API_KEY !== 'hitch-training-external'
++  || process.env.HITCH_EXTERNAL_ENDPOINT_BINDING)) throw new Error('invalid training model binding');
++if (!training && model.startsWith('training/')) throw new Error('training model requires a managed Harbor binding');
++const key = training ? process.env.OPENAI_API_KEY : process.env.HITCH_LOCAL_MODEL_TOKEN || process.env.OPENAI_API_KEY;
+ if (!key) throw new Error('a model API credential is required for the model-call harness');
+-const base = new URL(process.env.HITCH_LOCAL_MODEL_BASE_URL || process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1/');
++const base = new URL(training ? process.env.OPENAI_BASE_URL || '' : process.env.HITCH_LOCAL_MODEL_BASE_URL || process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1/');
++if (training && (base.protocol !== 'http:' || base.username || base.password || base.search || base.hash
++  || !new RegExp(`^/[a-f0-9]{48}/${runId}/openai/?$`).test(base.pathname))) throw new Error('training endpoint must be run-scoped');
+ const loopback = base.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(base.hostname);
+ const managedRunId = process.env.HITCH_EXTERNAL_RUN_ID || '';
+ const managed = process.env.HITCH_EXTERNAL_ENDPOINT_BINDING
+@@ -20,7 +32,7 @@ const managed = process.env.HITCH_EXTERNAL_ENDPOINT_BINDING
+   && /^run_[a-f0-9]{32}$/.test(managedRunId)
+   && base.protocol === 'http:'
+   && new RegExp(`^/[a-f0-9]{48}/${managedRunId}/openai/?$`).test(base.pathname);
+-if (base.username || base.password || base.search || base.hash || (base.protocol !== 'https:' && !loopback && !managed)) throw new Error('invalid model endpoint');
++if (base.username || base.password || base.search || base.hash || (base.protocol !== 'https:' && !loopback && !managed && !training)) throw new Error('invalid model endpoint');
+ if (!base.pathname.endsWith('/')) base.pathname += '/';
+ let raw = '';
+ for await (const chunk of process.stdin) {
+@@ -30,37 +42,51 @@ for await (const chunk of process.stdin) {
+ let input;
+ try { input = JSON.parse(raw); } catch { input = { schema_version: '1', messages: [{ role: 'user', content: [{ type: 'input_text', text: raw }] }] }; }
+ const allowed = new Set(['schema_version', 'messages', 'max_output_tokens', 'reasoning_effort']);
+-if (input.schema_version !== '1' || Object.keys(input).some(k => !allowed.has(k)) || !Array.isArray(input.messages) || !input.messages.length) throw new Error('invalid model input');
++if (!input || input.schema_version !== '1' || Object.keys(input).some(k => !allowed.has(k)) || !Array.isArray(input.messages) || !input.messages.length) throw new Error('invalid model input');
++if (training && (input.max_output_tokens !== undefined || input.reasoning_effort !== undefined
++  || input.messages.at(-1)?.role !== 'user' || input.messages.slice(0, -1).some(m => m?.role !== 'system'))) throw new Error('training requires one user turn and the frozen generation budget');
+ for (const message of input.messages) {
+   if (!['system', 'user'].includes(message.role) || Object.keys(message).some(k => !['role', 'content'].includes(k)) || !Array.isArray(message.content) || !message.content.length) throw new Error('invalid model message');
+   for (const part of message.content) {
+     if (part.type === 'input_text') {
+       if (typeof part.text !== 'string' || Object.keys(part).some(k => !['type', 'text'].includes(k))) throw new Error('invalid text part');
+     } else if (part.type === 'input_image') {
++      if (training) throw new Error('training model-call requires text inputs');
+       if (typeof part.image_url !== 'string' || !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(part.image_url) || Object.keys(part).some(k => !['type', 'image_url'].includes(k))) throw new Error('images must be native, embedded PNG/JPEG/WebP');
+     } else throw new Error('unsupported input modality');
+   }
+ }
+ const localDefault = process.env.HITCH_LOCAL_MAX_OUTPUT_TOKENS === undefined ? 8192 : Number(process.env.HITCH_LOCAL_MAX_OUTPUT_TOKENS);
+-const maxTokens = input.max_output_tokens ?? localDefault;
++const maxTokens = training ? binding.max_output_tokens : input.max_output_tokens ?? localDefault;
+ if (!Number.isSafeInteger(maxTokens) || maxTokens < 1 || maxTokens > 131072) throw new Error('invalid max_output_tokens');
+ if (input.reasoning_effort !== undefined && !['none', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(input.reasoning_effort)) throw new Error('invalid reasoning effort');
+ const emit = event => console.log(JSON.stringify(event));
+-emit({ type: 'session.created', session_id: randomUUID() });
+-const responses = process.env.HITCH_MODEL_API !== 'chat-completions';
++const abort = new AbortController();
++process.once('SIGTERM', () => abort.abort()); process.once('SIGINT', () => abort.abort());
++emit({ type: 'session.created', session_id: randomUUID(), ...(training ? { policy_version: binding.policy_version } : {}) });
++const responses = !training && process.env.HITCH_MODEL_API !== 'chat-completions';
+ const response = await fetch(new URL(responses ? 'responses' : 'chat/completions', base), {
+   redirect: 'error',
+-  method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+-  body: JSON.stringify(responses ? { model, input: input.messages, tools: [], tool_choice: 'none', store: false, max_output_tokens: maxTokens, ...(input.reasoning_effort ? { reasoning: { effort: input.reasoning_effort } } : {}) } : { model, messages: input.messages.map(m => ({ role: m.role, content: m.content.map(p => p.text || '').join('\n') })), max_tokens: maxTokens }),
+-  signal: AbortSignal.timeout(3600000),
++  method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', ...(training ? { 'Idempotency-Key': `${runId}-0` } : {}) },
++  body: JSON.stringify(responses ? { model, input: input.messages, tools: [], tool_choice: 'none', store: false, max_output_tokens: maxTokens, ...(input.reasoning_effort ? { reasoning: { effort: input.reasoning_effort } } : {}) } : { model, messages: input.messages.map(m => ({ role: m.role, content: m.content.map(p => p.text || '').join('\n') })), max_tokens: maxTokens, ...(training ? { stream: false } : {}) }),
++  signal: AbortSignal.any([abort.signal, AbortSignal.timeout(3600000)]),
+ });
+ if (!response.ok) throw new Error(`model API returned HTTP ${response.status}`);
+ const body = await response.json();
++abort.signal.throwIfAborted();
+ if (responses && (!['completed', 'incomplete'].includes(body.status) || !Array.isArray(body.output)) || !responses && !Array.isArray(body.choices)) throw new Error('invalid model completion');
+ if (responses && body.output.some(item => !['message', 'reasoning'].includes(item.type))) throw new Error('model returned a prohibited tool/action item');
++if (training && (body.choices.length !== 1 || body.choices[0]?.message?.role !== 'assistant'
++  || typeof body.choices[0].message.content !== 'string' || body.choices[0].message.tool_calls?.length
++  || body.choices[0].message.function_call || !['stop', 'length'].includes(body.choices[0].finish_reason))) throw new Error('invalid training text completion');
+ const output = !responses ? body.choices.map(c => c.message?.content || '').join('\n') : body.output.filter(item => item.type === 'message').flatMap(item => item.content || []).map(part => part.type === 'output_text' ? part.text : part.type === 'refusal' ? part.refusal : '').join('\n');
+ // An empty answer (including token exhaustion) remains a gradable model
+ // outcome. Provider/transport failures above remain infrastructure errors.
+-emit({ type: 'provider.response', response: body });
++emit({ type: 'provider.response', response: body, ...(training ? { receipt_id: response.headers.get('x-gear-receipt-id') } : {}) });
+ emit({ type: 'usage.updated', usage: body.usage || {} });
+-emit({ type: 'message.completed', text: output });
++if (training && body.choices[0].finish_reason === 'length') {
++  emit({ type: 'training.terminated', termination: 'truncated' }); process.exitCode = 8;
++} else {
++  emit({ type: 'message.completed', text: output });
++  if (training) emit({ type: 'training.terminated', termination: 'terminated' });
++}
+diff --git a/src/adapters/providers/model-call.ts b/src/adapters/providers/model-call.ts
+index f7817d0..cf4cd5d 100644
+--- a/src/adapters/providers/model-call.ts
++++ b/src/adapters/providers/model-call.ts
+@@ -26,6 +26,9 @@ export const modelCallAdapter: AdapterDefinition = {
+         ...(Number.isSafeInteger(runtime.model_endpoint_max_output_tokens)
+           ? { HITCH_LOCAL_MAX_OUTPUT_TOKENS: String(runtime.model_endpoint_max_output_tokens) }
+           : {}),
++      } } : process.env.HITCH_TRAINING_EXTERNAL === "1" ? { env: {
++        OPENAI_BASE_URL: process.env.OPENAI_BASE_URL as string,
++        OPENAI_API_KEY: "hitch-training-external",
+       } } : {}),
+     };
+   },
+diff --git a/src/cli/commands/capabilities.ts b/src/cli/commands/capabilities.ts
+index 0c90f10..48ede19 100644
+--- a/src/cli/commands/capabilities.ts
++++ b/src/cli/commands/capabilities.ts
+@@ -22,7 +22,7 @@ export function capabilitiesCommand(args: string[]): void {
+     endpoint_harnesses: ["codex", "model-call", "training-tool"],
+     exact_policy_tokens: "1",
+     training_policy_fencing: "1",
+-    training_harnesses: ["training-tool"],
++    training_harnesses: ["training-tool", "model-call"],
+     training_gpu_validation: "pending",
+     ordered_eval_control: "2",
+     evaluation_environment_binding: "3",
+diff --git a/src/evals/request.ts b/src/evals/request.ts
+index aa3cba6..573330e 100644
+--- a/src/evals/request.ts
++++ b/src/evals/request.ts
+@@ -85,8 +85,8 @@ export async function validateEvalRequest(input: EvalRequestInput): Promise<Eval
+   const localInference = validateEvalLocalInference(input.local_inference, typeof input.model === "string" ? input.model : "");
+   const training = input.training_binding === undefined ? undefined : parseTrainingBinding(input.training_binding);
+   if (training && (localInference || input.model !== `training/${training.bindingId}` || attempts !== 1 || infrastructureRetries !== 0
+-    || reference.harness_id !== "training-tool" || (input.agent_args as unknown[] | undefined)?.length || (input.pass_env as unknown[] | undefined)?.length)) {
+-    throw invalidInput("training-external requires training-tool, one logical attempt, zero automatic retries, no argument/env overrides, and its exact training/<bindingId> model");
++    || !["training-tool", "model-call"].includes(reference.harness_id) || (input.agent_args as unknown[] | undefined)?.length || (input.pass_env as unknown[] | undefined)?.length)) {
++    throw invalidInput("training-external requires training-tool or model-call, one logical attempt, zero automatic retries, no argument/env overrides, and its exact training/<bindingId> model");
+   }
+   if (!training && String(input.model).startsWith("training/")) throw invalidInput("training models require an explicit training binding");
+   if (input.environment_binding !== undefined && (typeof input.environment_binding !== "string"
+diff --git a/src/runs/training-runtime.ts b/src/runs/training-runtime.ts
+index 909aced..8391f0a 100644
+--- a/src/runs/training-runtime.ts
++++ b/src/runs/training-runtime.ts
+@@ -8,7 +8,7 @@ export function trainingHarborIdentity(env: NodeJS.ProcessEnv, runId: string, mo
+   }
+   const value = JSON.parse(env.HITCH_TRAINING_BINDING ?? "null") as TrainingProxyIdentityV1 | null;
+   if (env.HITCH_HARBOR_INTERNAL !== "1" || env.HITCH_TRAINING_RUN_ID !== runId || env.OPENAI_API_KEY !== "hitch-training-external"
+-    || !harness.startsWith("training-tool@") || !value || model !== `training/${value.binding_id}` || value.api !== "chat-completions"
++    || !/^(training-tool|model-call)@/.test(harness) || !value || model !== `training/${value.binding_id}` || value.api !== "chat-completions"
+     || !/^sha256:[a-f0-9]{64}$/.test(value.generation_contract_digest) || !value.policy_version || !value.training_run_id
+     || ![value.max_episode_steps, value.max_output_tokens].every(n => Number.isSafeInteger(n) && n > 0)) throw invalidInput("training Harbor binding is invalid");
+   const url = new URL(env.OPENAI_BASE_URL ?? "");
+diff --git a/src/workers/remote-harbor-work-spec.ts b/src/workers/remote-harbor-work-spec.ts
+index 70caca4..1f0c794 100644
+--- a/src/workers/remote-harbor-work-spec.ts
++++ b/src/workers/remote-harbor-work-spec.ts
+@@ -106,7 +106,7 @@ function validateModelGraph(binding: RemoteModelBindingV2, request: EvalRequest,
+   if (binding.kind === "training-external") {
+     if (request.endpoint_binding || !request.training_binding || !plan.training_binding
+       || sha256JSON(request.training_binding) !== sha256JSON(binding.training) || sha256JSON(plan.training_binding) !== sha256JSON(binding.training)
+-      || request.model !== `training/${binding.training.bindingId}` || !request.harness_ref.startsWith("training-tool@")
++      || request.model !== `training/${binding.training.bindingId}` || !/^(training-tool|model-call)@/.test(request.harness_ref)
+       || request.attempts !== 1 || request.infrastructure_retries !== 0 || request.agent_args.length
+       || plan.slots.length !== 1 || plan.work_items.length !== 1 || plan.retry_policy.infrastructure_retries !== 0) {
+       throw specError("remote training binding differs from its single-attempt work graph");
+diff --git a/test-support/remote-harbor-model.ts b/test-support/remote-harbor-model.ts
+index d294c22..a79ebe2 100644
+--- a/test-support/remote-harbor-model.ts
++++ b/test-support/remote-harbor-model.ts
+@@ -28,7 +28,7 @@ process.exit(0);
+ }
+ 
+ export async function writeCaptureHarbor(root: string, invalidFirst = false, captureSource = false,
+-  interruption?: { reached: string; resume: string }): Promise<string> {
++  interruption?: { reached: string; resume: string }, trainingAdapter = "training-tool"): Promise<string> {
+   const executable = path.join(root, "fake-capture-harbor");
+   const source = `#!/usr/bin/env node
+ const fs = require("node:fs");
+@@ -51,13 +51,13 @@ fs.writeFileSync(counter, String(count));
+   const health = await fetch(local(capture.health_url_template));
+   if (!health.ok) process.exit(4);
+   if (capture.training_external) {
+-    const output = require("node:child_process").execFileSync(process.execPath, [${JSON.stringify(path.resolve("integrations/training-tool/cli.js"))}, "--model", "training/" + capture.training_external.binding_id], {
+-      input: "Run two tools, then finish.", encoding: "utf8", env: {...process.env, HITCH_HARBOR_INTERNAL: "1", HITCH_TRAINING_EXTERNAL: "1",
++    const output = require("node:child_process").execFileSync(process.execPath, [${JSON.stringify(path.resolve("integrations", trainingAdapter, "cli.js"))}, "--model", "training/" + capture.training_external.binding_id], {
++      input: ${JSON.stringify(trainingAdapter === "model-call" ? "Compute 1 + 1." : "Run two tools, then finish.")}, encoding: "utf8", env: {...process.env, HITCH_HARBOR_INTERNAL: "1", HITCH_TRAINING_EXTERNAL: "1",
+         HITCH_TRAINING_RUN_ID: runId, HITCH_TRAINING_BINDING: JSON.stringify(capture.training_external), OPENAI_API_KEY: "hitch-training-external",
+         OPENAI_BASE_URL: local(capture.base_url_template).replace("{provider}", "openai")},
+     });
+     const events = output.trim().split("\\n").map(line => JSON.parse(line));
+-    if (events.filter(e => e.type === "tool.started").length !== 2 || events.filter(e => e.type === "provider.response").some(e => !e.receipt_id)) process.exit(7);
++    if (events.filter(e => e.type === "tool.started").length !== ${trainingAdapter === "model-call" ? 0 : 2} || events.filter(e => e.type === "provider.response").some(e => !e.receipt_id)) process.exit(7);
+   } else {
+   const response = await fetch(local(capture.base_url_template).replace("{provider}", "openai") + "/responses", {
+     method: "POST", headers: {authorization: "Bearer " + process.env.OPENAI_API_KEY, "content-type": "application/json"},
+@@ -137,7 +137,7 @@ export async function writeExportedBundle(options: {
+       verifier_identity: benchmarkVerifierIdentity(options.benchmarkId, options.benchmarkRevision),
+     },
+     parent: { kind: "eval", eval_id: options.evalId, trial_id: options.trialId, attempt: 1 },
+-    status: "succeeded", harness: { harness_id: options.training ? "training-tool" : "codex", requested_ref: options.harnessRef ?? "codex@version:1.2.3", revision_identity: `sha256:${"a".repeat(64)}` },
++    status: "succeeded", harness: { harness_id: options.harnessRef?.split("@")[0] ?? (options.training ? "training-tool" : "codex"), requested_ref: options.harnessRef ?? "codex@version:1.2.3", revision_identity: `sha256:${"a".repeat(64)}` },
+     ...(options.training ? { training_external: options.training } : {}),
+     model: options.external ? { provider: "external-endpoint", requested_id: options.external.endpoint_ref,
+       effective_id: options.external.wire_model, identity_resolved: false, endpoint_binding: options.external }
+diff --git a/test-support/remote-worker-harbor.ts b/test-support/remote-worker-harbor.ts
+index 49e5905..408afe5 100644
+--- a/test-support/remote-worker-harbor.ts
++++ b/test-support/remote-worker-harbor.ts
+@@ -26,13 +26,15 @@ const runEval = (options: RunEvalOptions) => runEvalProduction({ ...options, har
+ 
+ type ModelCaptureMode = "api" | "api-verifier-source" | "api-repair"
+   | "managed" | "managed-verifier-source-recovery" | "managed-repair" | "managed-recovery"
+-  | "training" | "training-verifier-source" | "training-recovery";
++  | "training" | "training-verifier-source" | "training-recovery" | "training-text";
+ 
+ // Each mode owns its daemon, worker, roots and upstream. Group callers by model
+ // contract so unrelated scenarios do not share one cumulative file deadline.
+ export async function verifyRemoteModelCapture(t: TestContext, mode: ModelCaptureMode): Promise<void> {
+   const managed = mode.startsWith("managed"), training = mode.startsWith("training"), repair = mode.endsWith("repair");
+   const captureSource = mode.includes("verifier-source");
++  const textTraining = mode === "training-text", trainingAdapter = textTraining ? "model-call" : "training-tool";
++  const expectedGenerations = training && !textTraining ? 3 : 1;
+   const inferenceId = `sha256:${"8".repeat(64)}` as const, modelId = `sha256:${"9".repeat(64)}` as const;
+   const modelNode = { schema_version: "2" as const, node_id: "model-test", generation: "generation-1", runtime_digest: inferenceId, launcher: "process" as const };
+   let acquisitions = 0, releases = 0, generations = 0;
+@@ -50,12 +52,12 @@ export async function verifyRemoteModelCapture(t: TestContext, mode: ModelCaptur
+     fencingToken: "test-fence", expiresAt: new Date(Date.now() + 60_000).toISOString(), endpointRef: "hitch-training:remote_training",
+     credentialRef: "hitch-training:remote_training", generationContractDigest: inferenceId, requiredCapture: "exact-policy-tokens-v1",
+     api: "chat-completions", maxOutputTokens: 16, maxEpisodeSteps: 4 });
+-  const harnessRef = training ? await trainingHarnessRef(controllerRoot) : "codex@version:1.2.3";
++  const harnessRef = training ? await trainingHarnessRef(controllerRoot, trainingAdapter) : "codex@version:1.2.3";
+   let boundRun: string | undefined;
+   const npm = await writeFakeNpm(controllerRoot, { packageName: "@openai/codex", binName: "codex" });
+   const inspector = await writeResourceInspector(controllerRoot);
+   const docker = await writeEmptyDocker(controllerRoot);
+-  const harbor = await writeCaptureHarbor(controllerRoot, repair, captureSource);
++  const harbor = await writeCaptureHarbor(controllerRoot, repair, captureSource, undefined, trainingAdapter);
+   const secret = "sk-remote-capture-secret-value-123456789";
+   const upstream = http.createServer((request, response) => {
+     const chunks: Buffer[] = [];
+@@ -76,10 +78,15 @@ export async function verifyRemoteModelCapture(t: TestContext, mode: ModelCaptur
+         assert.equal(request.url, "/v1/chat/completions"); assert.ok(boundRun); generations++;
+         assert.equal(request.headers["idempotency-key"], `${boundRun}-${generations - 1}`);
+         assert.equal(body.model, trainingBinding.expectedPolicyVersion);
++        if (textTraining) {
++          assert.equal(body.tools, undefined);
++          assert.deepEqual(body.messages, [{ role: "user", content: "Compute 1 + 1." }]);
++          assert.equal(body.max_tokens, trainingBinding.maxOutputTokens);
++        }
+         if (generations > 1) assert.match(body.messages.at(-1).content, new RegExp(`remote-tool-${generations - 1}`));
+         response.setHeader("x-gear-receipt-id", `receipt-${generations}`);
+-        response.end(JSON.stringify({ model: trainingBinding.expectedPolicyVersion, choices: [{ finish_reason: generations < 3 ? "tool_calls" : "stop",
+-          message: generations < 3 ? { role: "assistant", content: null, tool_calls: [{ id: `call-${generations}`, type: "function",
++        response.end(JSON.stringify({ model: trainingBinding.expectedPolicyVersion, choices: [{ finish_reason: generations < expectedGenerations ? "tool_calls" : "stop",
++          message: generations < expectedGenerations ? { role: "assistant", content: null, tool_calls: [{ id: `call-${generations}`, type: "function",
+             function: { name: "bash", arguments: JSON.stringify({ command: `printf remote-tool-${generations}` }) } }] } : { role: "assistant", content: "done" } }] })); return;
+       }
+       const payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+@@ -240,8 +247,8 @@ export async function verifyRemoteModelCapture(t: TestContext, mode: ModelCaptur
+   };
+   assert.equal(ref.topology, "in-sandbox");
+   assert.equal(ref.completeness, "complete");
+-  assert.equal(ref.interaction_count, training ? 3 : 1);
+-  assert.equal(generations, training ? 3 : 1);
++  assert.equal(ref.interaction_count, expectedGenerations);
++  assert.equal(generations, expectedGenerations);
+   if (training) {
+     assert.equal(boundRun, runId);
+     const manifest = JSON.parse(await readFile(path.join(runDirectory, "manifest.json"), "utf8"));
+@@ -254,7 +261,7 @@ export async function verifyRemoteModelCapture(t: TestContext, mode: ModelCaptur
+   }
+   if (mode.endsWith("recovery")) {
+     await verifyRemoteModelRecovery(controllerRoot, evalId, runId);
+-    assert.equal(generations, training ? 3 : 1, "recovering acknowledged results must not call the model again");
++    assert.equal(generations, expectedGenerations, "recovering acknowledged results must not call the model again");
+     if (captureSource) {
+       const files = await regularFiles(path.join(controllerRoot, "evals", evalId, "harbor"));
+       const sourceFile = files.find(file => path.basename(file) === "verifier-source.json")!;
+@@ -333,16 +340,16 @@ export async function cleanupRemoteHarbor(controller: AbortController, workers:
+   if (failed?.status === "rejected") throw failed.reason;
+ }
+ 
+-async function trainingHarnessRef(root: string): Promise<string> {
++async function trainingHarnessRef(root: string, adapter = "training-tool"): Promise<string> {
+   const source = path.join(root, "training-source");
+-  await mkdir(path.join(source, "integrations/training-tool"), { recursive: true });
+-  await writeFile(path.join(source, "integrations/training-tool/cli.js"), await readFile("integrations/training-tool/cli.js"), { mode: 0o755 });
++  await mkdir(path.join(source, "integrations", adapter), { recursive: true });
++  await writeFile(path.join(source, "integrations", adapter, "cli.js"), await readFile(path.join("integrations", adapter, "cli.js")), { mode: 0o755 });
+   await writeFile(path.join(source, "package.json"), '{"type":"module"}');
+   for (const args of [["init"], ["add", "."], ["-c", "user.name=Hitch Test", "-c", "user.email=test@hitch.invalid", "commit", "-m", "training fixture"]]) {
+     await runCommand("git", args, { cwd: source });
+   }
+   const result = await runCommand("git", ["rev-parse", "HEAD"], { cwd: source });
+-  return `training-tool@git+${pathToFileURL(source).href}#${result.stdout.trim()}`;
++  return `${adapter}@git+${pathToFileURL(source).href}#${result.stdout.trim()}`;
+ }
+ 
+ async function serverUrl(server: Server): Promise<string> {
+diff --git a/test/model-call-training.test.ts b/test/model-call-training.test.ts
+new file mode 100644
+index 0000000..52fb2e9
+--- /dev/null
++++ b/test/model-call-training.test.ts
+@@ -0,0 +1,140 @@
++import test, { type TestContext } from "node:test";
++import assert from "node:assert/strict";
++import http from "node:http";
++import { once } from "node:events";
++import { spawn } from "node:child_process";
++import { mkdtemp, rm } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import path from "node:path";
++import { HostModelProxy, parseTrainingBinding, trainingProxyIdentity } from "../src/model-access/index.js";
++import { packageRoot } from "../src/foundation/index.js";
++import { trainingHarborIdentity } from "../src/runs/training-runtime.js";
++
++// Real runner and run-scoped proxy; the model response is an HTTP fixture.
++// This does not represent a Harbor container, GPU update, or quality experiment.
++async function fixture(t: TestContext) {
++  const hash = `sha256:${"a".repeat(64)}` as const, runId = `run_${"c".repeat(32)}`;
++  const binding = parseTrainingBinding({ kind: "training-external", bindingId: "text_test", trainingRunId: "train_text",
++    policyLeaseRef: { uri: `cas:${hash}`, digest: hash, mediaType: "application/json" }, expectedPolicyVersion: "runtime-1/update-0",
++    fencingToken: "fixture-fence", expiresAt: new Date(Date.now() + 60_000).toISOString(), endpointRef: "hitch-training:text_test",
++    credentialRef: "hitch-training:text_test", generationContractDigest: hash, requiredCapture: "exact-policy-tokens-v1",
++    api: "chat-completions", maxOutputTokens: 16, maxEpisodeSteps: 4 });
++  const calls: { url: string; headers: http.IncomingHttpHeaders; body: Record<string, any> }[] = [];
++  const state = { status: 200, hold: false, choice: { finish_reason: "stop", message: { role: "assistant", content: "\\boxed{2}" } } as Record<string, unknown> };
++  let started!: () => void;
++  const generationStarted = new Promise<void>(resolve => { started = resolve; });
++  const server = http.createServer(async (req, res) => {
++    let raw = ""; for await (const chunk of req) raw += chunk;
++    const body = JSON.parse(raw); calls.push({ url: req.url!, headers: req.headers, body });
++    res.setHeader("content-type", "application/json");
++    if (req.url === "/v1/hitch/run") { res.end(JSON.stringify({ runId: body.runId, policyVersion: binding.expectedPolicyVersion })); return; }
++    started();
++    if (state.hold) return;
++    res.statusCode = state.status; res.setHeader("x-gear-receipt-id", "receipt-text-0");
++    res.end(JSON.stringify({ model: binding.expectedPolicyVersion, choices: [state.choice], usage: { prompt_tokens: 10, completion_tokens: 4 } }));
++  });
++  const root = await mkdtemp(path.join(tmpdir(), "hitch-model-call-training-"));
++  let proxy: HostModelProxy | undefined;
++  const children: ReturnType<typeof spawn>[] = [];
++  t.after(async () => {
++    for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
++    await proxy?.close(); server.closeAllConnections();
++    await new Promise<void>(resolve => server.close(() => resolve()));
++    await rm(root, { recursive: true, force: true });
++  });
++  server.listen(0, "127.0.0.1"); await once(server, "listening");
++  const upstream = `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}/v1`;
++  const credential = "s".repeat(48);
++  proxy = await HostModelProxy.start({ captureRoot: root, evalId: `eval_${"b".repeat(32)}`, mode: "proxy", required: true,
++    trainingEndpoint: { schema_version: "1", binding, base_url: upstream, credential }, upstreams: { openai: upstream },
++    upstreamAuthorizations: { openai: `Bearer ${credential}` }, upstreamWireModels: { openai: binding.expectedPolicyVersion },
++    credentialValues: [credential], bindHost: "127.0.0.1", advertisedHost: "127.0.0.1" });
++  const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HITCH_HARBOR_INTERNAL: "1", HITCH_TRAINING_EXTERNAL: "1",
++    HITCH_TRAINING_RUN_ID: runId, HITCH_TRAINING_BINDING: JSON.stringify(trainingProxyIdentity(binding)),
++    OPENAI_API_KEY: "hitch-training-external", OPENAI_BASE_URL: `${proxy.localBaseUrl}/${runId}/openai` };
++  function launch(input: unknown = "Compute 1 + 1.", overrides: NodeJS.ProcessEnv = {}) {
++    const child = spawn(process.execPath, [path.join(packageRoot(), "integrations/model-call/cli.js"), "--model", "training/text_test"],
++      { env: { ...env, ...overrides }, stdio: ["pipe", "pipe", "pipe"] });
++    children.push(child);
++    let stdout = "", stderr = "";
++    child.stdout!.on("data", c => stdout += c); child.stderr!.on("data", c => stderr += c);
++    const done = once(child, "close").then(([code]) => ({ code, stderr,
++      events: stdout.trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) }));
++    child.stdin!.end(typeof input === "string" ? input : JSON.stringify(input));
++    return { child, done };
++  }
++  return { env, runId, binding, calls, state, launch, generationStarted };
++}
++
++test("training model-call preserves one tool-free text request through the native proxy", async t => {
++  const f = await fixture(t);
++  const input = { schema_version: "1", messages: [
++    { role: "system", content: [{ type: "input_text", text: "Solve and box the answer." }] },
++    { role: "user", content: [{ type: "input_text", text: "Compute 1 + 1." }] },
++  ] };
++  const result = await f.launch(input, { HITCH_MODEL_API: "responses", HITCH_LOCAL_MAX_OUTPUT_TOKENS: "99",
++    HITCH_LOCAL_MODEL_BASE_URL: "https://unused.invalid", HITCH_LOCAL_MODEL_TOKEN: "unused" }).done;
++  assert.equal(result.code, 0, result.stderr);
++  assert.deepEqual(f.calls.map(c => c.url), ["/v1/hitch/run", "/v1/chat/completions"]);
++  const call = f.calls[1]!;
++  assert.equal(call.headers.authorization, `Bearer ${"s".repeat(48)}`);
++  assert.equal(call.headers["idempotency-key"], `${f.runId}-0`);
++  assert.deepEqual(call.body, { model: f.binding.expectedPolicyVersion, messages: [
++    { role: "system", content: "Solve and box the answer." }, { role: "user", content: "Compute 1 + 1." },
++  ], max_tokens: 16, stream: false });
++  assert.equal(result.events.find(e => e.type === "provider.response").receipt_id, "receipt-text-0");
++  assert.deepEqual(result.events.filter(e => e.type === "training.terminated"), [{ type: "training.terminated", termination: "terminated" }]);
++  assert.equal(result.events.find(e => e.type === "message.completed").text, "\\boxed{2}");
++  assert.deepEqual(trainingHarborIdentity(f.env, f.runId, "training/text_test", `model-call@commit:${"d".repeat(40)}`), trainingProxyIdentity(f.binding));
++  assert.throws(() => trainingHarborIdentity(f.env, f.runId, "training/text_test", `codex@commit:${"d".repeat(40)}`), /binding is invalid/);
++});
++
++test("training model-call rejects unbound, overridden, multi-turn and image inputs before generation", async t => {
++  const f = await fixture(t);
++  const user = { role: "user", content: [{ type: "input_text", text: "question" }] };
++  const input = { schema_version: "1", messages: [user] };
++  for (const [value, env] of [
++    [input, { HITCH_HARBOR_INTERNAL: "0" }], [input, { HITCH_TRAINING_EXTERNAL: "0" }],
++    [input, { OPENAI_BASE_URL: "http://127.0.0.1:1/v1" }],
++    [{ ...input, max_output_tokens: 99 }, {}], [{ ...input, reasoning_effort: "high" }, {}],
++    [{ ...input, messages: [user, user] }, {}],
++    [{ ...input, messages: [{ role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,aGVsbG8=" }] }] }, {}],
++  ] as [unknown, NodeJS.ProcessEnv][]) assert.notEqual((await f.launch(value, env).done).code, 0);
++  assert.equal(f.calls.length, 0);
++});
++
++test("training model-call marks length separately without a completed answer or retry", async t => {
++  const f = await fixture(t); f.state.choice.finish_reason = "length";
++  const result = await f.launch().done;
++  assert.equal(result.code, 8, result.stderr);
++  assert.deepEqual(result.events.filter(e => e.type === "training.terminated"), [{ type: "training.terminated", termination: "truncated" }]);
++  assert.equal(result.events.some(e => e.type === "message.completed"), false);
++  assert.equal(f.calls.filter(c => c.url === "/v1/chat/completions").length, 1);
++});
++
++test("training model-call rejects tool completions without emitting a normal terminal sample", async t => {
++  const f = await fixture(t);
++  f.state.choice = { finish_reason: "tool_calls", message: { role: "assistant", content: null,
++    tool_calls: [{ id: "tool-0", type: "function", function: { name: "bash", arguments: "{}" } }] } };
++  const result = await f.launch().done;
++  assert.notEqual(result.code, 0); assert.match(result.stderr, /invalid training text completion/);
++  assert.equal(result.events.some(e => e.type === "training.terminated"), false);
++  assert.equal(f.calls.filter(c => c.url === "/v1/chat/completions").length, 1);
++});
++
++test("training model-call never retries an upstream HTTP failure", async t => {
++  const f = await fixture(t); f.state.status = 503;
++  const result = await f.launch().done;
++  assert.notEqual(result.code, 0); assert.match(result.stderr, /HTTP 503/);
++  assert.equal(result.events.some(e => e.type === "training.terminated"), false);
++  assert.equal(f.calls.filter(c => c.url === "/v1/chat/completions").length, 1);
++});
++
++test("training model-call cancellation exits without publishing success", { timeout: 10_000 }, async t => {
++  const f = await fixture(t); f.state.hold = true;
++  const { child, done } = f.launch(); await f.generationStarted; child.kill("SIGTERM");
++  const result = await done;
++  assert.notEqual(result.code, 0);
++  assert.equal(result.events.some(e => e.type === "training.terminated"), false);
++  assert.equal(f.calls.filter(c => c.url === "/v1/chat/completions").length, 1);
++});
+diff --git a/test/remote-worker-harbor-training.test.ts b/test/remote-worker-harbor-training.test.ts
+index 25c4f9b..37d0638 100644
+--- a/test/remote-worker-harbor-training.test.ts
++++ b/test/remote-worker-harbor-training.test.ts
+@@ -1,6 +1,6 @@
+ import test from "node:test";
+ import { verifyRemoteModelCapture } from "../test-support/remote-worker-harbor.js";
+ 
+-for (const mode of ["training", "training-verifier-source", "training-recovery"] as const) {
++for (const mode of ["training", "training-verifier-source", "training-recovery", "training-text"] as const) {
+   test(`packaged remote worker captures and imports ${mode} model evidence`, t => verifyRemoteModelCapture(t, mode));
+ }
+diff --git a/test/training-binding.test.ts b/test/training-binding.test.ts
+index 7024937..1fcae2c 100644
+--- a/test/training-binding.test.ts
++++ b/test/training-binding.test.ts
+@@ -68,13 +68,15 @@ test("training proxy admits one run and only forwards generation using the priva
+   assert.equal(JSON.stringify(proxy.route).includes('s'.repeat(48)), false);
+ });
+ 
+-test("training requests reject hidden retries and unbound training aliases", async t => {
++for (const harness of ["training-tool", "model-call"]) test(`${harness} training requests reject hidden retries and unbound aliases`, async t => {
+   const dataset = await mkdtemp(path.join(tmpdir(), 'hitch-training-request-')); t.after(() => rm(dataset, { recursive: true, force: true }));
+-  const base = { dataset, harness_ref: `training-tool@commit:${'a'.repeat(40)}`, model: 'training/binding_test', training_binding: binding(), infrastructure_retries: 0 };
++  const base = { dataset, harness_ref: `${harness}@commit:${'a'.repeat(40)}`, model: 'training/binding_test', training_binding: binding(), infrastructure_retries: 0 };
+   assert.deepEqual((await validateEvalRequest(base)).training_binding, base.training_binding);
+   await assert.rejects(validateEvalRequest({ ...base, attempts: 2 }), /one logical attempt/);
+   await assert.rejects(validateEvalRequest({ ...base, infrastructure_retries: 1 }), /zero automatic retries/);
+   await assert.rejects(validateEvalRequest({ ...base, training_binding: undefined }), /explicit training binding/);
++  await assert.rejects(validateEvalRequest({ ...base, harness_ref: `codex@commit:${'a'.repeat(40)}` }), /requires training-tool or model-call/);
++  await assert.rejects(validateEvalRequest({ ...base, pass_env: ["OPENAI_BASE_URL"] }), /no argument\/env overrides/);
+ });
+ 
+ test("fixed training harness appends tool observations and emits a single terminal marker", async t => {
+-- 
+2.39.2 (Apple Git-143)
+

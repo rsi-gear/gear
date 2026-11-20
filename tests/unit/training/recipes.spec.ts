@@ -33,6 +33,16 @@ describe('versioned training recipes and offline SFT admission', () => {
       spec.trainer.recipe = recipe as T.TrainingRecipe; expect(() => parseModelTrainingSpec(spec)).toThrow()
     }
   })
+  it('accepts the two fixed native harnesses and rejects general agents', () => {
+    for (const adapter of ['training-tool', 'model-call']) {
+      spec.fixedHarness.adapter = adapter
+      expect(parseModelTrainingSpec(spec).fixedHarness.adapter).toBe(adapter)
+      expect(parseModelTrainingSpec(v2spec(spec)).fixedHarness.adapter).toBe(adapter)
+    }
+    spec.fixedHarness.adapter = 'codex'
+    expect(() => parseModelTrainingSpec(spec)).toThrow('requires training-tool or model-call')
+    expect(() => parseModelTrainingSpec(v2spec(spec))).toThrow('requires training-tool or model-call')
+  })
   it('permits singleton REINFORCE++ while preserving baseline group requirements', () => {
     spec.trainer.recipe = 'agent-reinforce-plus-plus-v1'; spec.rollout.groupSize = 1; spec.trainer.globalBatchSize = 1
     expect(parseModelTrainingSpec(spec).rollout.groupSize).toBe(1)

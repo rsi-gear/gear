@@ -54,6 +54,7 @@ class ChallengerPipelineTests(unittest.TestCase):
         }
         self.invalid = False
         request = self.driver.d.request
+        request["fixedHarness"]["adapter"] = "model-call"
         request["rollout"]["zeroVarianceGroup"] = "keep"
         objective = DiagEvoChallengerReward(
             group_size=2,

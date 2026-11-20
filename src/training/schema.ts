@@ -191,7 +191,7 @@ export function parseTrainingRequest(v: unknown): T.TrainingRequest {
 function parseTrainingRequestBody(v: unknown): T.TrainingRequestV1 {
   const result = parse<T.TrainingRequestV1>(request, v, 'TrainingRequest')
   parseModelVersion(result.parentModel)
-  requireContract(result.fixedHarness.adapter === 'training-tool', 'unsupported-training-harness', 'v1 exact training requires the fixed linear training-tool harness')
+  requireContract(['training-tool', 'model-call'].includes(result.fixedHarness.adapter), 'unsupported-training-harness', 'exact training requires the fixed training-tool or model-call harness')
   requireContract((result.trainer.recipe === 'offline-sft-v1') === !!result.offlineTraining,
     'offline-dataset-required', 'offlineTraining must be supplied exactly for offline-sft-v1')
   validateRecipe(result.trainer, result.rollout, result.budgets)
@@ -248,7 +248,7 @@ function validateRuntimePlacement(lock: T.TrainingRuntimeLock, deployment: T.Fro
 }
 function parseModelTrainingSpecBody(v: unknown): T.ModelTrainingSpecV1 {
   const result = parse<T.ModelTrainingSpecV1>(spec, v, 'ModelTrainingSpec')
-  requireContract(result.fixedHarness.adapter === 'training-tool', 'unsupported-training-harness', 'v1 exact training requires training-tool for training and evaluation')
+  requireContract(['training-tool', 'model-call'].includes(result.fixedHarness.adapter), 'unsupported-training-harness', 'exact training requires training-tool or model-call for training and evaluation')
   requireContract((result.trainer.recipe === 'offline-sft-v1') === !!result.offlineTraining,
     'offline-dataset-required', 'offlineTraining must be supplied exactly for offline-sft-v1')
   validateRecipe(result.trainer, result.rollout, result.budgets)

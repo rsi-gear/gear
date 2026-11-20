@@ -46,6 +46,7 @@ class SolverPipelineTests(unittest.TestCase):
         self.classifier = DiagEvoMathClassifier(self.store)
         questions = self.store.read_json(self.origin.ref)["questions"]
         request = self.driver.d.request
+        request["fixedHarness"]["adapter"] = "model-call"
         task = request["trainDataset"]["tasks"][0]
         request["trainDataset"]["tasks"] = [{**task, "id": key} for key in questions]
         self.origin.native.request = request

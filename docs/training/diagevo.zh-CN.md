@@ -103,6 +103,28 @@ builder 从这些捕获和分类重新构造投票、计算整批奖励，调用
 
 `seal_local` 接受最后导出权重的本地 HF 捕获，明确保存 `localBackend` 和各组稳定键，不接受虚构的 native lease。它重放同一完整更新历史，验证导出模型、tokenizer/template、采样配置、实际 prompt、任务窗口及完整 B×G 槽位，并跨所有阶段拒绝重复捕获。此模式保留真实本地来源，不将它们转成有训练资格的原生 rollout。
 
+## 原生文本 harness 合同
+
+两个原生 script factory 都要求 `fixedHarness.adapter="model-call"`，并在加载课程或模型前拒绝工具 harness。controller 的训练准入按实际请求检查 Hitch 的 `training_harnesses`；独立评测检查 `external_endpoint_binding="1"` 以及 `endpoint_harnesses`。部署检查也使用上游实际公布的能力名称。不能只更换 manifest 名称而继续发送工具请求。
+
+这依赖 Hitch 的文本训练支持，尚未包含在未修改的 0.2.19 发布包内。本次固定源是 Hitch 分支 `codex/diagevo-model-call-training`、提交 `3c03d9895b70d0300f49602a366c87b587b22602`，基于 dev `cd5889d680969e5d3e5ad091d28da3d8280a2c10`；本地提交尚未推送。[完整依赖补丁](patches/hitch-model-call-training.patch)可应用到该基线并重新构建。部署时须从实际安装的 checkout 重新冻结 harness manifest、`runtimeLock.hitchCommit` 和 runtime digest，不能照抄历史运行的身份。
+
+现有 Hitch `model-call` 在训练 binding 下仅发一次无工具的 Chat Completions 请求，预算来自 binding，幂等键为 `RUN_ID-0`，不自动重试。正常 stop 保留 provider receipt 并发出 terminated；length 发出 truncated；工具回复、取消和接口失败不转成正常样本。Gear 继续保存原生 token/logprob 和策略身份，`_capture` 的严格文本检查不放宽。
+
+消息转换由任务创建方完成。例如把冻结的 scalar-content 消息列表封存为 Hitch 的 candidate input：
+
+```json
+{
+  "schema_version": "1",
+  "messages": [
+    { "role": "system", "content": [{ "type": "input_text", "text": "Solve and box the answer." }] },
+    { "role": "user", "content": [{ "type": "input_text", "text": "What is 1 + 1?" }] }
+  ]
+}
+```
+
+训练输入只接受零个或多个 system 消息加一个 user 消息，不接受图像或输入内预算／reasoning 覆盖。runner 将文本 parts 拼成原生 scalar content；调用方须确保拼接结果与 `scriptConfig.prompts` 精确一致。已有 benchmark final-response 导出合同可处理文本产物；任务、环境及 verifier 的创建／校准仍需外层实现，不因该 harness 支持而自动完成。
+
 ## 单个 challenger 作业的原生执行
 
 `gear.training.pipelines.diagevo_challenger.build_loop` 组合 `FrozenTaskSource → HitchRolloutExecutor → ChallengerDatasetStage → ChallengerModelUpdater`，最后一阶段先调用既有 `SlimeModelUpdater`。[示例入口](../../examples/training-loop/recipes/diagevo_challenger.py)可冻结为 `trainer.script`；`scriptConfig` 有三个必需字段：`objective` 为 `DiagEvoChallengerReward.describe().to_dict()`，`solver` 为上述 `FrozenHFSolver` 构造参数（含 `model_ref` 和 `instruction`），`prompts` 为已准入 task ID 到实际消息列表的映射。调用方用 `DiagEvoQuestionPrompt.messages` 等普通函数组织消息和任务，传输 solver HF snapshot 及其依赖，不增加 adapter。可选第四字段 `freshGeneration` 启用下述更新后采样。
@@ -262,7 +284,17 @@ factory 从冻结描述重建 policy、challenger objective 和 question prompt�
 
 `python/tests/test_diagevo_memory_pipeline.py` 将 solver 实际消费的提交、数学失败材料、真实 tiny BERT 和 SDK 类型化消息替身接到模型 provenance。覆盖两次提交仅在末次更新记忆、提交／诊断回执／最终返回丢失、完整阶段重放时的回执缺失、ledger 漂移、调用后的取消、未知 turn 停止重发和缺失 usage 保留；另串联新题构造、第二 solver 作业及最终记忆。SDK 响应、原生 actor、优化器和任务请求仍为明确替身，本组没有收费模型调用，也没有真实梯度或效果证据。
 
-当前十六组共 132 个 DiagEvo 测试通过。最小依赖环境运行同一集合，37 个通过、95 个因缺少可选依赖跳过。依赖边界检查、Ruff 和上述 78 文件类型检查通过。
+`python/tests/test_diagevo_text_harness.py` 单独启动真实 Hitch `model-call` 进程、run-scoped proxy 和 Gear `ExactGateway`，再用实际保存的回执通过 DiagEvo `_capture`；核对单次调用、无工具消息、幂等键、receipt ID 和原 token 保留。模型使用显式 byte-token 替身，verifier／任务准入为 fixture，不声称 Harbor 或 GPU 执行。它同时检查旧 Hitch 能力缺失和原生 factory 选用工具 harness 时提前拒绝。此前的 driver 集成用例由测试控制器直接发送 HTTP，不覆盖这一真实 runner 边界。
+
+当前十七组共 135 个 DiagEvo 用例已验证；完整依赖运行中的一个旧两作业 fixture 补齐文本 harness 声明后，失败项单独复测通过。最小依赖环境运行同一集合，39 个通过、96 个因缺少可选依赖或未配置独立 Hitch checkout 跳过。设置以下环境变量可运行跨仓库文本合同测试，普通 CI 未设置时会明确跳过，不计为已验收：
+
+```sh
+GEAR_DIAGEVO_HITCH_PATH=/absolute/path/to/built/hitch \
+PYTHONPATH=python:python/tests \
+python -m unittest test_diagevo_text_harness -v
+```
+
+Gear controller 的四个定向测试文件共 46 项已通过，覆盖训练及评测的固定 harness 准入、能力缺失和实际 Python 节点部署探测。Hitch 的 runner／binding 回归 16 项、远程工作图回归 4 项通过；后者使用真实打包、代理与 worker 协议，Harbor、Docker 和 canonical bundle 为 fixture。Gear 构建、TypeScript 类型检查、Ruff 与依赖边界检查通过；Hitch 构建、架构、语法与文档检查通过。Python 类型检查仍仅指上述 78 文件。
 
 上一批 driver、GRPO、脚本及配方回归有 57 个通过，4 个因未设置 `GEAR_PINNED_SLIME_SOURCE` 跳过，不将这些跳过项计为已验收。
 

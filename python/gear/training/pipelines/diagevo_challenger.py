@@ -294,6 +294,11 @@ class ChallengerModelUpdater:
 
 
 def build_loop(config, runtime):
+    require(
+        runtime.request["fixedHarness"].get("adapter") == "model-call",
+        "diagevo-text-harness-required",
+        "native DiagEvo requires the fixed model-call text harness",
+    )
     parameters = config["parameters"]
     require(
         set(parameters)

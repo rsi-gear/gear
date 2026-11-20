@@ -75,7 +75,7 @@ async def collect_rollout(args, rollout_id, job_dir, *, tasks=None, raw_only=Fal
     v2 = request["schemaVersion"] == 2
     client = None if v2 else HitchClient(config["hitchCommand"], config["hitchRoot"])
     if client:
-        await client.capabilities()
+        await client.capabilities(request["fixedHarness"]["adapter"])
     sampling = sampling_params(request["rollout"])
     parent = request["parentModel"]
     lease = runtime["lease"]

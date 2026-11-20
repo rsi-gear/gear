@@ -190,6 +190,8 @@ TaskSource 继续返回既有任务格式，不增加公共结果封套或包装
 
 训练 CAS 引用与搜索 `core.ArtifactRef` 不假定 wire 兼容。跨运行复用材料时，调用方通过已有导入路径验证 owner、摘要、可见性和用途；普通 dict 字段名称相同不构成授权。
 
+纯文本训练配方须匹配实际 executor 的输入合同。例如 DiagEvo 使用固定的 `model-call` harness，先协商 Hitch 的文本训练能力，并由任务创建方把冻结消息转换成 candidate input；不能用发送工具定义的 `training-tool` 冒充纯文本采样。真实 runner、代理和原生网关的合同验证与 GPU 更新／效果验收分别记录，详见 [DiagEvo 接入边界](training/diagevo.zh-CN.md#原生文本-harness-合同)。转换仍留在调用方，不增加 curriculum adapters。
+
 ### 6.2 Harness 搜索调用方
 
 搜索算法在现有 `step(view, state)` 中调用算子，把模型输入转换为真实 `MetaInput` 和 Call，并用已有 state 保存 pending 引用；获得响应后再调用解析和选择算子。读取材料、保存记忆和执行评测均直接使用既有能力。

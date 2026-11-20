@@ -241,6 +241,7 @@ class ConstructionPipelineTests(unittest.TestCase):
         second.d.store = second.f.store = self.store
         second.config["storeRoot"] = str(self.store.root)
         request = self.solver_request(second.d.request, ref)
+        request["fixedHarness"]["adapter"] = "model-call"
         second.d.request = request
         proxy = solver_tests.SolverPipelineTests()
         proxy.driver, proxy.store, proxy.questions = second, self.store, origin["questions"]

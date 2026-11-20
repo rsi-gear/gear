@@ -199,6 +199,11 @@ def _component(spec):
 
 def build_loop(config, runtime):
     """Reconstruct an admitted curriculum, including the native construction handoff."""
+    require(
+        runtime.request["fixedHarness"].get("adapter") == "model-call",
+        "diagevo-text-harness-required",
+        "native DiagEvo requires the fixed model-call text harness",
+    )
     parameters = config["parameters"]
     require(
         set(parameters) - {"memoryUpdate"}
