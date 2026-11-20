@@ -240,7 +240,7 @@ TaskSource 继续返回既有任务格式，不增加公共结果封套或包装
 | DiagEvo | solver samples → error-cause diagnosis → active/mastered memory → mixed practice generation → confidence filtering → training | 多数票伪标签、双置信度过滤、状态迁移；不宣称 oracle 正确性 |
 | TRACE | success/failure contrast → capability selection → executable environment generation/calibration → per-capability RL → adapter composition | [无 GPU 调用方](../examples/curriculum-harness/TRACE.zh-CN.md)实现规范字典、多轮标签、能力筛选、独立 Python 环境隔离与 rollout 校准；新 seed 练习接入混合池和正式搜索，验证／测试维持原始环境。真实模型效果待验收；专项 LoRA、RL 和 MoE 路由列后续，不能以文本 playbook 替代 |
 | Agent-R | search tree → error-boundary proposal → repair plan → revision dataset → iterative SFT | [无 GPU retail 调用方](../examples/curriculum-harness/AGENTR.zh-CN.md)已实现实际 UCT 搜索、逐步 critic、共同前缀回退、新后缀执行与原任务评分；语义修复提案经完整离线重放后，作为原 train 任务证据接入正式 harness 搜索。真实效果待验收。状态一致性是接纳条件，普通推理回执不冒充训练捕获，迭代 SFT 列后续 |
-| Self-Direction | base failure → 查找已有 lesson → 未命中才生成样本/训练/注册 adapter → retry → 必要时 clean-base fallback | 下一任务从 base 开始；记录 adapter 身份和路由策略，冻结基座不保证激活 adapter 后无回归 |
+| Self-Direction | base failure → 查找已有 lesson → 未命中才生成过程样本 → 注册／复用 → retry → 必要时 clean-base fallback | [无 GPU retail 调用方](../examples/curriculum-harness/SELFDIRECTION.zh-CN.md)已实现 CPU MiniLM 检索、语义审查、synthetic 提案、跨轮 registry、上下文重试与原任务评分；每个来源独立从同一 base 开始，lesson 与 base 回退成功分别归因。真实 LLM 效果待验收；论文使用的 LoRA 训练／加载列后续，不把文本建议声称为权重学习 |
 | GEPA / ACE | existing search / reflection / memory operators | 提供诊断或改进分支；默认不自动扩展任务分布 |
 
 新完整算法只在具有真实入口、默认组件、可替换参数、完整执行接入和验证后进入 `gear.algorithms`；可复用的 failure→data 算子集中在 `gear.curriculum`，不进入 `gear.search` 或强制套用其六模块。草案不提前占用“已支持算法”导出。既有 GEPA/RandomSearch 保持 v1，不直接混入 v2 Call；外层调用方可使用 curriculum 算子准备它们所需的数据。
@@ -288,7 +288,7 @@ pool、dataset、模型/adapter、harness、共享学习库分别版本化。一
 
 ## 11. 实施顺序与验收
 
-本版按不做 GPU 训练的范围验收。真实模型调用使用固定权重，改进对象是 harness；CPU 数值测试只证明相应数据合同和本地更新行为。SENTINEL／CoEvolve 已提供 retail 参考执行与探索调用方；TRACE 已提供独立环境生成、分组校准和经混合池进入正式搜索的调用方。Agent-R 已提供实际搜索、回退、修复材料及原任务范围内的正式 harness 接入，真实效果继续验收；Self-Direction 的无 GPU 组合仍待实现。GPU 训练及效果归入后续范围。GPU controller 配置或训练资源不是本版的前置条件。
+本版按不做 GPU 训练的范围验收。真实模型调用使用固定权重，改进对象是 harness；CPU 数值测试只证明相应数据合同和本地更新行为。SENTINEL／CoEvolve 已提供 retail 参考执行与探索调用方；TRACE 已提供独立环境生成、分组校准和经混合池进入正式搜索的调用方。Agent-R 已提供实际搜索、回退、修复材料及原任务范围内的正式 harness 接入；Self-Direction 已提供过程问答、CPU 检索、跨轮复用、上下文重试和 clean-base 回退调用方。工具域真实模型效果与下列条目的逐项验收继续进行。GPU 训练及效果归入后续范围。GPU controller 配置或训练资源不是本版的前置条件。
 
 **第一阶段：算子与输入输出。** 在 `gear.curriculum` 实现案例、失败记忆、练习计划、验证报告及对应算子。先提供简单的错题条件生成基线与随机生成基线，展示调用方自己的 TaskSource 如何组合算子并返回原任务格式。配置冻结、子调用恢复、生成任务封存和验证授权在该调用方实现中完成。
 

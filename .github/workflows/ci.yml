@@ -143,6 +143,7 @@ jobs:
           python -m unittest discover -s python/tests -p 'test_coevolve*.py' -v
           python -m unittest discover -s python/tests -p 'test_trace*.py' -v
           python -m unittest discover -s python/tests -p 'test_agentr*.py' -v
+          python -m unittest discover -s python/tests -p 'test_selfdirection*.py' -v
         env:
           PYTHONPATH: python
           GEAR_SENTINEL_TAU2_PATH: ${{ github.workspace }}/.tau2

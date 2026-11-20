@@ -101,6 +101,8 @@ repair 要求独立的新捕获与成功证明，并将 replay、checkpoint rese
 
 [Agent-R-inspired retail 调用方](../examples/curriculum-harness/AGENTR.zh-CN.md)已用固定权重模型接口接入 UCT 搜索、逐步错误位置提议、实际共同检查点回退和新后缀执行。它重放原始失败来源，以原任务 verifier 验证新后缀，再调用 `BuildSupervision` 构造语义修复材料。经过完整离线重放和原 train 任务绑定，公开修复证据可进入正式 Meta 搜索；候选继续通过原始验证任务选型，最终测试另行评价。普通推理回执没有训练捕获资格；本版不运行 SFT。真实模型收益仍待验收。
 
+[Self-Direction-inspired 调用方](../examples/curriculum-harness/SELFDIRECTION.zh-CN.md)将完整基线失败转成 `kind="example"` 的过程问答，经过语义审查和精确去重后输出 synthetic 监督提案。CPU MiniLM 在相同策略与训练 family 内检索 lesson，命中时跳过生成；每个原任务从原始状态重试，必要时进行一次 clean-base 回退，并分别记录成功归因。跨轮 registry 导入需完整离线重放。生成端仅见类别化反馈和公开轨迹；问答是上下文建议，不是 LoRA 权重更新或 native 成功证明。真实 LLM 收益仍待验收。
+
 trajectory preference 要求相同任务、环境和起始条件，允许后续分叉；step preference 额外要求同一决策前缀／状态。多数票标签明确保留为 `majority_vote`，不升格为 oracle。过程问答始终标为 `synthetic_procedural`，没有原生轨迹成功证明。
 
 材料范围 `feedback_only / verified_reference / gold_answer_allowed` 由调用方通过 `allowed_protocols` 提供已获得的授权；请求字段不能自行扩权。这个参数只是可信调用方传入的约束，不是能力令牌；实际 artifact、权限、状态和 mask 由训练 builder 再验证。
