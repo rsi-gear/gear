@@ -232,7 +232,7 @@ TaskSource 继续返回既有任务格式，不增加公共结果封套或包装
 | --- | --- | --- |
 | Forge | OutcomeCases → diagnose → FailureMemory → PlanPractice → Generate/Validate → SelectPractice → harness search | 训练失败建库、验证停滞触发、四类变异；单 run 动态任务池需扩展 |
 | DataEnvGym | student feedback → ProposeSubskills → PlanSkillPractice → Generate/Validate → training loop | skill-tree explore/exploit 算子与 CPU 调用方已实现，LLM/GPU 效果另验收；这是 teacher 环境框架，不当成一个固定策略 |
-| SENTINEL | failure memory → target directives → reference execution → task construction → validation → mixed pool → GRPO | [retail 调用方](../examples/curriculum-harness/SENTINEL.zh-CN.md)已接 solver 执行与评分、跨轮失败记忆、真实参考重放、native 校准、混合池与新的正式搜索 run；CLI／worker、候选约束和 fixed／random／failure 三组对照入口通过模型替身集成，mastery 探针和真实搜索效果仍待验收；GPU GRPO 列后续 |
+| SENTINEL | failure memory → target directives → reference execution → task construction → validation → mixed pool → GRPO | [retail 调用方](../examples/curriculum-harness/SENTINEL.zh-CN.md)已接 solver 执行与评分、跨轮失败记忆、真实参考重放、native 校准、混合池与新的正式搜索 run；CLI／worker、候选约束、三组对照及具名训练任务 mastery 探针通过模型替身集成；探针绑定当前策略与全部支持任务，未知不当失败、重复失败重新激活且不增加诊断频次；真实模型效果仍待验收；GPU GRPO 列后续 |
 | CoEvolve | policy-aligned history → forgetting/frontier/rare-action selection → environment exploration → task-solution generation → GRPO | 跨版本比较条件；保留三类信号分别可消融 |
 | DiagEvo | solver samples → error-cause diagnosis → active/mastered memory → mixed practice generation → confidence filtering → training | 多数票伪标签、双置信度过滤、状态迁移；不宣称 oracle 正确性 |
 | TRACE | success/failure contrast → capability selection → executable environment generation/calibration → per-capability RL → adapter composition | 生成环境、专项 LoRA 和 MoE 路由均需实际能力；不能以文本 playbook 替代 |

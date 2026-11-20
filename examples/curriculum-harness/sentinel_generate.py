@@ -24,6 +24,7 @@ from gear.curriculum import (
     FailureMode,
     GeneratePractice,
     LearningTarget,
+    MasteryObservation,
     MergeFailureMemory,
     ModelInput,
     OutcomeRecord,
@@ -142,6 +143,30 @@ def authorized_cases(observations, *, environment_id, family):
     }
 
 
+def recorded_trace_key(case, calls):
+    # Native collector evidence already binds the complete dialogue and tool
+    # observations. Equal actions can have different confirmation/policy outcomes.
+    traces = [
+        ref.get("digest")
+        for ref in case.record.evidence_refs
+        if isinstance(ref, dict)
+        and isinstance(ref.get("path"), str)
+        and Path(ref["path"]).name == "trajectory.json"
+    ]
+    if any(not isinstance(value, str) or not value for value in traces) or len(set(traces)) > 1:
+        raise ValueError("one retail outcome requires one consistent captured trajectory digest")
+    record = case.record
+    return digest(
+        [
+            record.task_id,
+            record.policy_id,
+            record.environment_id,
+            calls,
+            traces[0] if traces else None,
+        ]
+    )
+
+
 def controller_cases(observations, *, environment_id, family, seed, limit, previous=()):
     """Deduplicate task/trace pairs after resolving attempts; sample both outcomes."""
     if type(limit) is not int or not 2 <= limit <= 128:
@@ -153,19 +178,15 @@ def controller_cases(observations, *, environment_id, family, seed, limit, previ
     for case in old_cases:
         if case.outcome not in buckets:
             continue
-        record = case.record
-        key = digest(
-            [record.task_id, record.policy_id, record.environment_id, old_traces[case.case_id]]
-        )
+        key = recorded_trace_key(case, old_traces[case.case_id])
         if key in seen and seen[key] != case.outcome:
             raise ValueError("identical historical task/tool trace has conflicting outcomes")
         seen[key] = case.outcome
     for case in sorted(eligible, key=lambda case: case.case_id):
         if case.outcome not in buckets:
             continue
-        record = case.record
         calls = traces[case.case_id]
-        key = digest([record.task_id, record.policy_id, record.environment_id, calls])
+        key = recorded_trace_key(case, calls)
         if key in seen:
             if seen[key] != case.outcome:
                 raise ValueError("identical task/tool trace has conflicting outcomes")
@@ -179,6 +200,117 @@ def controller_cases(observations, *, environment_id, family, seed, limit, previ
     failure_count = min(len(buckets["failure"]), limit - min(len(buckets["success"]), limit // 2))
     selected = buckets["failure"][:failure_count] + buckets["success"][: limit - failure_count]
     return tuple(selected), {case.case_id: traces[case.case_id] for case in selected}
+
+
+def probe_sample_id(probe_id, task_id, repetition):
+    return "mastery-" + digest([probe_id, task_id, repetition]).removeprefix("sha256:")
+
+
+def measured_mastery(mode, cases, *, probe_id, repetitions, policy_id):
+    """Bind a retail regression measurement to every supporting task and repetition."""
+    if not isinstance(probe_id, str) or not probe_id.strip():
+        raise ValueError("mastery probes require an explicit unique probe_id")
+    if type(repetitions) is not int or not 1 <= repetitions <= 16:
+        raise ValueError("mastery probe repetitions must be between 1 and 16")
+    by_id = {case.case_id: case for case in cases}
+    tasks = {by_id[key].record.task_id for key in mode.support_case_ids}
+    expected = {
+        probe_sample_id(probe_id, task_id, repetition): task_id
+        for task_id in tasks
+        for repetition in range(repetitions)
+    }
+    selected = [case for case in cases if case.record.sample_id in expected]
+    if len(selected) != len(expected) or any(
+        case.record.task_id != expected[case.record.sample_id]
+        or case.record.policy_id != policy_id
+        or case.record.attempt != 0
+        for case in selected
+    ):
+        raise ValueError("mastery requires every declared probe under one current solver policy")
+    if any(case.outcome == "failure" for case in selected):
+        mastered = False
+    elif all(case.outcome == "success" for case in selected):
+        mastered = True
+    else:
+        return None
+    return MasteryObservation(
+        mode.mode_id,
+        mastered,
+        policy_id,
+        (
+            {
+                "kind": "sentinel-retail-probe-v1",
+                "probe_id": probe_id,
+                "repetitions": repetitions,
+                "support_case_ids": sorted(mode.support_case_ids),
+                "case_ids": sorted(case.case_id for case in selected),
+            },
+        ),
+    )
+
+
+def checked_history(history, *, scope, diagnoser_id):
+    """Caller-owned JSON conversion, including measured retail probe provenance."""
+    if (
+        set(history) != {"schema_version", "scope", "observations", "memory"}
+        or type(history["schema_version"]) is not int
+        or history["schema_version"] != 1
+        or history["scope"] != scope
+    ):
+        raise ValueError("failure memory must belong to this explicit training scope")
+    cases, _ = authorized_cases(history["observations"], **scope)
+    by_id = {case.case_id: case for case in cases}
+    memory = []
+    for row in history["memory"]:
+        mastery = row.get("mastery")
+        mode = FailureMode(
+            **{
+                **row,
+                **{
+                    key: tuple(row[key])
+                    for key in ("support_case_ids", "counterexample_case_ids", "families")
+                },
+                "mastery": MasteryObservation(
+                    **{**mastery, "evidence_refs": tuple(mastery["evidence_refs"])}
+                )
+                if mastery is not None
+                else None,
+            }
+        )
+        if mode.state not in ("active", "mastered"):
+            raise ValueError("retail memory must be active or explicitly measured as mastered")
+        if mode.diagnoser_id != diagnoser_id or mode.families != (scope["family"],):
+            raise ValueError("failure memory diagnoser or family changed")
+        for ids, outcome in (
+            (mode.support_case_ids, "failure"),
+            (mode.counterexample_case_ids, "success"),
+        ):
+            if any(key not in by_id or by_id[key].outcome != outcome for key in ids):
+                raise ValueError("failure memory requires its original complete supporting cases")
+        policies = {by_id[key].record.policy_id for key in mode.support_case_ids}
+        if any(by_id[key].record.policy_id not in policies for key in mode.counterexample_case_ids):
+            raise ValueError("memory counterexamples must use a comparable solver policy")
+        if mode.mastery is not None:
+            refs = mode.mastery.evidence_refs
+            if (
+                len(refs) != 1
+                or not isinstance(refs[0], dict)
+                or set(refs[0])
+                != {"kind", "probe_id", "repetitions", "support_case_ids", "case_ids"}
+                or refs[0]["kind"] != "sentinel-retail-probe-v1"
+            ):
+                raise ValueError("retail mastery requires its complete declared probe evidence")
+            expected = measured_mastery(
+                mode,
+                cases,
+                probe_id=refs[0]["probe_id"],
+                repetitions=refs[0]["repetitions"],
+                policy_id=mode.mastery.policy_id,
+            )
+            if expected is None or expected != mode.mastery:
+                raise ValueError("retail mastery differs from its measured task outcomes")
+        memory.append(mode)
+    return MergeFailureMemory()(memory, ()), cases
 
 
 async def retail_dialogue(
@@ -299,7 +431,8 @@ class RetailGenerator:
             "max_cases",
         }
         if (
-            set(config) - {"history", "conditioning", "random_targets"} != expected
+            set(config) - {"history", "conditioning", "random_targets", "use_failure_memory"}
+            != expected
             or type(config["schema_version"]) is not int
             or config["schema_version"] != 1
             or config["partition"] != "train"
@@ -320,11 +453,17 @@ class RetailGenerator:
         if calls.max_calls != config["max_calls"]:
             raise ValueError("model caller quota differs from the frozen generation budget")
         conditioning = config.get("conditioning", "failure")
+        if type(config.get("use_failure_memory", False)) is not bool:
+            raise ValueError("use_failure_memory must be an explicit boolean")
         if conditioning not in ("failure", "random"):
             raise ValueError("generation conditioning must be failure or random")
         if conditioning == "random":
             targets = config.get("random_targets")
-            if config["observations"] or "history" in config:
+            if (
+                config["observations"]
+                or "history" in config
+                or config.get("use_failure_memory", False)
+            ):
                 raise ValueError("random generation cannot receive outcomes or failure memory")
             if (
                 not isinstance(targets, list)
@@ -353,50 +492,9 @@ class RetailGenerator:
                 "memory": [],
             },
         )
-        if (
-            set(history) != {"schema_version", "scope", "observations", "memory"}
-            or type(history["schema_version"]) is not int
-            or history["schema_version"] != 1
-            or history["scope"] != self.scope
-        ):
-            raise ValueError("failure memory must belong to this explicit training scope")
-        prior_cases, _ = authorized_cases(history["observations"], **self.scope)
-        prior_by_id = {case.case_id: case for case in prior_cases}
-        self.memory = []
-        for row in history["memory"]:
-            if row.get("state") != "active" or row.get("mastery") is not None:
-                raise ValueError(
-                    "this caller has no measured mastery probes; memory must remain active"
-                )
-            mode = FailureMode(
-                **{
-                    **row,
-                    **{
-                        key: tuple(row[key])
-                        for key in ("support_case_ids", "counterexample_case_ids", "families")
-                    },
-                }
-            )
-            if mode.diagnoser_id != self.diagnoser.identity or mode.families != (config["family"],):
-                raise ValueError("failure memory diagnoser or family changed")
-            for ids, outcome in (
-                (mode.support_case_ids, "failure"),
-                (mode.counterexample_case_ids, "success"),
-            ):
-                if any(
-                    key not in prior_by_id or prior_by_id[key].outcome != outcome for key in ids
-                ):
-                    raise ValueError(
-                        "failure memory requires its original complete supporting cases"
-                    )
-            policies = {prior_by_id[key].record.policy_id for key in mode.support_case_ids}
-            if any(
-                prior_by_id[key].record.policy_id not in policies
-                for key in mode.counterexample_case_ids
-            ):
-                raise ValueError("memory counterexamples must use a comparable solver policy")
-            self.memory.append(mode)
-        self.memory = MergeFailureMemory()(self.memory, ())
+        self.memory, prior_cases = checked_history(
+            history, scope=self.scope, diagnoser_id=self.diagnoser.identity
+        )
         # A completed round is immutable. Retry attempts must be reconciled before
         # exporting it; later probes use new sample IDs, not overwritten evidence.
         prior_samples = {}
@@ -411,6 +509,32 @@ class RetailGenerator:
         ledger = {digest(row): row for row in [*history["observations"], *config["observations"]]}
         self.history_observations = [ledger[key] for key in sorted(ledger)]
         self.all_cases, _ = authorized_cases(self.history_observations, **self.scope)
+        current_cases, _ = authorized_cases(config["observations"], **self.scope)
+        prior_ids = {case.case_id for case in prior_cases}
+        prior_by_id = {case.case_id: case for case in prior_cases}
+        # Replaying old source material is not a new policy observation.
+        policies = {
+            case.record.policy_id for case in current_cases if case.case_id not in prior_ids
+        }
+        fresh_failures = {
+            case.record.task_id
+            for case in current_cases
+            if case.outcome == "failure" and case.case_id not in prior_ids
+        }
+        self.memory = tuple(
+            replace(mode, state="active", mastery=None)
+            if mode.mastery is not None
+            and (
+                (policies and policies != {mode.mastery.policy_id})
+                or (
+                    mode.mastery.mastered
+                    and fresh_failures
+                    & {prior_by_id[key].record.task_id for key in mode.support_case_ids}
+                )
+            )
+            else mode
+            for mode in self.memory
+        )
         self.cases, self.case_traces = controller_cases(
             config["observations"],
             **self.scope,
@@ -490,17 +614,20 @@ class RetailGenerator:
             )
             self.save_memory(())
         else:
-            if not any(case.outcome == "failure" for case in self.cases):
+            if any(case.outcome == "failure" for case in self.cases):
+                prepared = self.diagnoser.prepare(self.cases, memory=self.memory)
+                prepared = replace(prepared, data={**prepared.data, "tool_calls": self.case_traces})
+                diagnosis = self.diagnoser.parse(
+                    await self.model_json("diagnose", prepared), cases=self.cases
+                )
+                memory = MergeFailureMemory()(self.memory, diagnosis)
+                self.checkpoint("diagnosis", [asdict(mode) for mode in memory])
+            elif self.config.get("use_failure_memory", False):
+                memory = self.memory
+            else:
                 self.save_memory(self.memory)
                 return self.checkpoint("result", {"status": "no_failures", "selected": []})
-            prepared = self.diagnoser.prepare(self.cases, memory=self.memory)
-            prepared = replace(prepared, data={**prepared.data, "tool_calls": self.case_traces})
-            diagnosis = self.diagnoser.parse(
-                await self.model_json("diagnose", prepared), cases=self.cases
-            )
-            memory = MergeFailureMemory()(self.memory, diagnosis)
             self.save_memory(memory)
-            self.checkpoint("diagnosis", [asdict(mode) for mode in memory])
             targets = SelectLearningTargets()(memory, budget=1, rng=rng)
             if not targets:
                 return self.checkpoint("result", {"status": "no_targets", "selected": []})

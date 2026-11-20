@@ -214,6 +214,46 @@ class SolverCollectionTests(unittest.TestCase):
                 grading = json.loads((Path(root) / "grading.json").read_text())
                 self.assertEqual(grading["native"]["reward"], 1)
 
+    def test_equal_tools_with_different_dialogue_are_distinct_but_identical_traces_deduplicate(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as root:
+            _, success = self.collect(
+                Path(root) / "success",
+                SolverCalls(self.reference["steps"]),
+                sample_id="policy-success",
+            )
+            steps = copy.deepcopy(self.reference["steps"])
+            next(step for step in steps if step["kind"] == "message")["text"] = (
+                "I will change something now."
+            )
+            _, failure = self.collect(
+                Path(root) / "failure",
+                SolverCalls(steps, policy=False),
+                sample_id="policy-failure",
+            )
+            self.assertTrue(success["observation"]["record"]["passed"])
+            self.assertFalse(failure["observation"]["record"]["passed"])
+            self.assertEqual(
+                success["observation"]["tool_calls"], failure["observation"]["tool_calls"]
+            )
+            self.assertNotEqual(success["trajectory_digest"], failure["trajectory_digest"])
+            scope = {
+                "family": "retail-train",
+                "environment_id": success["observation"]["record"]["environment_id"],
+                "seed": 23,
+                "limit": 8,
+            }
+            cases, _ = controller_cases([success["observation"], failure["observation"]], **scope)
+            self.assertEqual({case.outcome for case in cases}, {"success", "failure"})
+            repeated = copy.deepcopy(failure["observation"])
+            repeated["record"]["sample_id"] = "another-identical-failure"
+            cases, _ = controller_cases([repeated], previous=[failure["observation"]], **scope)
+            self.assertEqual(cases, ())
+            repeated["record"]["passed"] = True
+            with self.assertRaisesRegex(ValueError, "conflicting outcomes"):
+                controller_cases([repeated], previous=[failure["observation"]], **scope)
+
     def test_resume_saved_write_keeps_receipts_and_native_state_identical(self):
         with tempfile.TemporaryDirectory() as root:
             calls = SolverCalls(self.reference["steps"])
