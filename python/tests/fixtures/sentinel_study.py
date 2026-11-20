@@ -15,7 +15,13 @@ class FixtureCalls(ProviderCalls):
     async def call(self, key, prompt, harness, **settings):
         if key.startswith("solve/") or key == "policy-audit":
             return await super().call("study/" + key, prompt, harness, **settings)
-        request = {"key": key, "prompt": prompt, "harness": harness, "settings": settings}
+        request = {
+            "key": key,
+            "prompt": prompt,
+            "harness": harness,
+            "settings": settings,
+            "timeout_seconds": self.timeout_seconds,
+        }
         if self.path(key).exists():
             saved = read_json(self.path(key))
             if saved["request"] != request:

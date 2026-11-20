@@ -166,6 +166,25 @@ class RetailSearchFixture(unittest.TestCase):
 
 
 class RetailProviderTests(RetailSearchFixture):
+    def test_invalid_call_wait_budget_is_rejected_before_search_or_provider_io(self):
+        for value in (None, True, 0, -1, 1801, 240.0, "240"):
+            with self.subTest(value=value):
+                message = self.message()
+                message["configuration"]["call_timeout_seconds"] = value
+                with self.assertRaisesRegex(ValueError, "call_timeout_seconds"):
+                    asyncio.run(respond(message, calls_factory=FixtureCalls))
+                with self.assertRaisesRegex(ValueError, "call_timeout_seconds"):
+                    asyncio.run(
+                        search(
+                            self.root / "invalid-wait",
+                            TAU_SOURCE,
+                            {**self.config, "call_timeout_seconds": value},
+                            preflight=True,
+                        )
+                    )
+                self.assertFalse((self.root / "calls/submitted.jsonl").exists())
+                self.assertFalse((self.root / "invalid-wait/input.json").exists())
+
     def test_unknown_turn_remains_unknown_during_inspection(self):
         message = self.message()
         with (

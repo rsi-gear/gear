@@ -55,7 +55,8 @@ async def _search(root, source_root, config, provider_script, preflight):
         "max_repairs",
     }
     if (
-        set(config) - {"agentr_workspaces", "final_reply_on_limit"} != expected
+        set(config) - {"agentr_workspaces", "final_reply_on_limit", "call_timeout_seconds"}
+        != expected
         or type(config["schema_version"]) is not int
         or config["schema_version"] != 1
     ):
@@ -67,6 +68,11 @@ async def _search(root, source_root, config, provider_script, preflight):
         raise ValueError("retail search model and harness settings must be nonempty")
     if type(config.get("final_reply_on_limit", False)) is not bool:
         raise ValueError("final_reply_on_limit must be an explicit boolean")
+    if "call_timeout_seconds" in config and (
+        type(config["call_timeout_seconds"]) is not int
+        or not 1 <= config["call_timeout_seconds"] <= 1800
+    ):
+        raise ValueError("call_timeout_seconds must be an integer from 1 to 1800")
     if (
         type(config["max_steps"]) is not int
         or not 1 <= config["max_steps"] <= 64
@@ -271,6 +277,11 @@ async def _search(root, source_root, config, provider_script, preflight):
                 **(
                     {"final_reply_on_limit": config["final_reply_on_limit"]}
                     if "final_reply_on_limit" in config
+                    else {}
+                ),
+                **(
+                    {"call_timeout_seconds": config["call_timeout_seconds"]}
+                    if "call_timeout_seconds" in config
                     else {}
                 ),
                 **(

@@ -54,7 +54,8 @@ def validate_config(config):
         "max_repairs",
     }
     if (
-        set(config) - {"generator_model", "final_reply_on_limit"} != required
+        set(config) - {"generator_model", "final_reply_on_limit", "call_timeout_seconds"}
+        != required
         or type(config["schema_version"]) is not int
         or config["schema_version"] != 1
     ):
@@ -66,6 +67,11 @@ def validate_config(config):
         raise ValueError("retail study requires explicit nonempty model and harness settings")
     if type(config.get("final_reply_on_limit", False)) is not bool:
         raise ValueError("final_reply_on_limit must be an explicit boolean")
+    if "call_timeout_seconds" in config and (
+        type(config["call_timeout_seconds"]) is not int
+        or not 1 <= config["call_timeout_seconds"] <= 1800
+    ):
+        raise ValueError("call_timeout_seconds must be an integer from 1 to 1800")
     if (
         not isinstance(config.get("generator_model", config["model"]), str)
         or not config.get("generator_model", config["model"]).strip()
@@ -212,6 +218,11 @@ class RetailStudy:
                 if "final_reply_on_limit" in c
                 else {}
             ),
+            **(
+                {"call_timeout_seconds": c["call_timeout_seconds"]}
+                if "call_timeout_seconds" in c
+                else {}
+            ),
         }
 
     async def collect(self, seed, round_index, bundle, harness):
@@ -244,7 +255,14 @@ class RetailStudy:
             ),
         }
         async with self.calls_factory(
-            root / "calls", max_calls=c["calls_per_task"], concurrency=1
+            root / "calls",
+            max_calls=c["calls_per_task"],
+            concurrency=1,
+            **(
+                {"timeout_seconds": c["call_timeout_seconds"]}
+                if "call_timeout_seconds" in c
+                else {}
+            ),
         ) as calls:
             result = await RetailCollector(root, self.source_root, config, calls).collect()
         return {
@@ -274,7 +292,14 @@ class RetailStudy:
             **({"random_targets": c["random_targets"]} if arm == "random" else {}),
         }
         async with self.calls_factory(
-            root / "calls", max_calls=c["calls_per_generation"], concurrency=1
+            root / "calls",
+            max_calls=c["calls_per_generation"],
+            concurrency=1,
+            **(
+                {"timeout_seconds": c["call_timeout_seconds"]}
+                if "call_timeout_seconds" in c
+                else {}
+            ),
         ) as calls:
             result = await RetailGenerator(root, self.source_root, config, calls).generate()
         return {

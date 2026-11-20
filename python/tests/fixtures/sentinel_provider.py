@@ -18,8 +18,9 @@ class FixtureCalls:
     identity = "explicit-retail-search-model-fixture-v1"
     timeout_seconds = 240
 
-    def __init__(self, root, *, max_calls, concurrency=1):
+    def __init__(self, root, *, max_calls, concurrency=1, timeout_seconds=240):
         self.root, self.max_calls = Path(root).resolve(), max_calls
+        self.timeout_seconds = timeout_seconds
         self.root.mkdir(parents=True, exist_ok=True)
 
     async def __aenter__(self):
@@ -37,7 +38,13 @@ class FixtureCalls:
         return "not_submitted", None
 
     async def call(self, key, prompt, harness, **settings):
-        request = {"key": key, "prompt": prompt, "harness": harness, "settings": settings}
+        request = {
+            "key": key,
+            "prompt": prompt,
+            "harness": harness,
+            "settings": settings,
+            "timeout_seconds": self.timeout_seconds,
+        }
         if self.path(key).exists():
             saved = read_json(self.path(key))
             if saved["request"] != request:

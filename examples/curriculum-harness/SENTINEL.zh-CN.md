@@ -126,6 +126,8 @@ PYTHONPATH=/path/to/gear/python \
 
 同一 workspace 绑定一个不可变 run；中断后检查原 journal 并恢复，不另建收费 run。provider 检查已提交的模型 turn：未知保持 `unknown`，确实尚未提交的下一步返回 `resumable`；inspect 不发新调用。已完成回执可重建操作结果，工具重放始终使用新的内存数据库。所有任务与 Meta 共享 `max_calls`，同时保留实际完成调用的原生 usage；不宣称 HTTP、token、美元硬上限或可靠取消。扩池或改变初始 harness 时须使用新的 workspace／run。
 
+正式搜索可选 `call_timeout_seconds`，为 1–1800 的整数，省略时仍使用 240 秒。它控制每次原生模型响应的等待，目标与 Meta 使用同一设置；配置进入搜索身份、provider profile 和采集记录。provider 整个操作仍有独立的 30 分钟进程时限，因此该字段不保证操作总时长，也不是取消确认或自动重试设置。超时后保留原请求并核对原生状态，不能把没有完成回执的请求计为任务失败。
+
 ## 测量与更新 failure memory
 
 [sentinel_mastery.py](sentinel_mastery.py) 将当前 harness 的实际执行记录转换成已有 `MasteryObservation`，交给 `MergeFailureMemory` 更新记忆。它测量的是**原始支持任务上的回归结果**，不等于整个失败机制已被普遍掌握，也不把一次失败当作新的语义诊断。探针使用训练任务，不消耗 validation／test；多个模式共享同一任务时只执行一份计划中的样本。
@@ -177,6 +179,7 @@ PYTHONPATH=python /tmp/gear-sentinel-env/bin/python \
 | `generator_model`（可选） | 默认等于 `model`；可单独指定固定权重的生成模型，对 random/failure 的诊断、探索、用户模拟、写作和审核使用相同模型；源采集、正式 target 与最终评测仍使用 `model` |
 | `max_steps`, `calls_per_task`, `calls_per_generation`, `calls_per_search` | 每次执行步数，每个采集／评测任务、每次生成、每轮正式搜索的逻辑调用配额；不宣称 token／美元硬上限 |
 | `final_reply_on_limit`（可选） | 默认 `false`；同一设置用于所有组的源采集、生成、搜索与最终评测，结束调用计入对应既有配额 |
+| `call_timeout_seconds`（可选） | 默认 240，1–1800 的整数；统一传入源采集、生成、正式 target／Meta 和最终测试的调用等待，并绑定到运行身份；不改变逻辑调用配额或超时后的原请求核对规则 |
 | `fixed_count`, `generated_count`, `generation_attempts` | 固定份额、生成份额、每组每轮预先限定的生成尝试数；fixed 原始池至少满足两份额之和 |
 | `random_targets` | 不依赖失败观测的已授权训练领域目标列表 |
 | `max_characters`, `target_characters`, `max_repairs` | 与正式搜索相同的候选约束 |

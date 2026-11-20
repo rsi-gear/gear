@@ -162,6 +162,11 @@ async def respond(message, *, calls_factory=TextCalls):
         raise ValueError("retail provider requires bounded steps and a positive model-call quota")
     if type(config.get("final_reply_on_limit", False)) is not bool:
         raise ValueError("final_reply_on_limit must be an explicit boolean")
+    if "call_timeout_seconds" in config and (
+        type(config["call_timeout_seconds"]) is not int
+        or not 1 <= config["call_timeout_seconds"] <= 1800
+    ):
+        raise ValueError("call_timeout_seconds must be an integer from 1 to 1800")
     identity = provider_identity(config, calls_factory)
     action = message["action"]
     if action == "describe":
@@ -213,7 +218,14 @@ async def respond(message, *, calls_factory=TextCalls):
         receipts, evidence, samples = {}, [], []
         data = None
         async with calls_factory(
-            Path(config["calls"]), max_calls=config["max_calls"], concurrency=1
+            Path(config["calls"]),
+            max_calls=config["max_calls"],
+            concurrency=1,
+            **(
+                {"timeout_seconds": config["call_timeout_seconds"]}
+                if "call_timeout_seconds" in config
+                else {}
+            ),
         ) as calls:
 
             async def model_call(key, prompt, harness, **settings):

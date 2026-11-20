@@ -207,9 +207,19 @@ class StudyRuntimeTests(RetailSearchFixture):
     def test_explicit_generator_model_and_budget_final_replies_reach_formal_comparison(self):
         with self.environment():
             study = self.study(
-                max_steps=4, final_reply_on_limit=True, generator_model="explicit-generator"
+                max_steps=4,
+                final_reply_on_limit=True,
+                generator_model="explicit-generator",
+                call_timeout_seconds=600,
             )
             result = asyncio.run(study.run())
+            with self.assertRaisesRegex(ValueError, "changed"):
+                self.study(
+                    max_steps=4,
+                    final_reply_on_limit=True,
+                    generator_model="explicit-generator",
+                    call_timeout_seconds=601,
+                )
         self.assertTrue(result["comparable"])
         self.assertEqual(result["mean_pass_rate"]["baseline"], 0)
         self.assertTrue(
@@ -232,6 +242,35 @@ class StudyRuntimeTests(RetailSearchFixture):
             config = read_json(path.parents[2] / "input.json")["config"]
             self.assertEqual(config["model"], "explicit-fixture")
             self.assertEqual(config["max_calls"], 10)
+        stage_inputs = [
+            read_json(path)
+            for path in study.root.glob("**/input.json")
+            if "model_calls_identity" in read_json(path)
+        ]
+        self.assertTrue(stage_inputs)
+        self.assertTrue(all(row["call_timeout_seconds"] == 600 for row in stage_inputs))
+        actual_calls = list(study.root.glob("**/calls/*.json"))
+        self.assertTrue(actual_calls)
+        self.assertTrue(
+            all(read_json(path)["request"]["timeout_seconds"] == 600 for path in actual_calls)
+        )
+        meta_calls = [
+            path for path in actual_calls if read_json(path)["request"]["key"].endswith("/meta")
+        ]
+        self.assertTrue(meta_calls)
+        profiles = list((self.root / "profiles").glob("*.json"))
+        self.assertTrue(profiles)
+        for path in profiles:
+            self.assertEqual(read_json(path)["configuration"]["call_timeout_seconds"], 600)
+
+    def test_wait_budget_rejects_invalid_values_before_study_input_is_sealed(self):
+        for value in (None, True, 0, -1, 1801, 240.0, "240"):
+            with (
+                self.subTest(value=value),
+                self.assertRaisesRegex(ValueError, "call_timeout_seconds"),
+            ):
+                self.study(call_timeout_seconds=value)
+            self.assertFalse((self.root / "study/input.json").exists())
 
     def test_incomplete_search_is_retained_and_excluded_from_comparison(self):
         with self.environment():
