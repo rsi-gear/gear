@@ -162,8 +162,18 @@ async def _build_pool(root, source_root, config):
                 },
             }
         )
-    for path in config["generated"]:
-        sources["generated"].append(await replay_generated(path, source_root))
+    for entry in config["generated"]:
+        if isinstance(entry, dict):
+            if set(entry) != {"recipe", "workspace", "draft_id"} or entry["recipe"] != "coevolve":
+                raise ValueError("unsupported generated retail recipe")
+            # Direct conversion at the caller boundary; no curriculum adapter.
+            from coevolve_retail import replay_generated as replay_coevolve
+
+            sources["generated"].append(
+                await replay_coevolve(entry["workspace"], source_root, entry["draft_id"])
+            )
+        else:
+            sources["generated"].append(await replay_generated(entry, source_root))
     rng = DeterministicRandom(str(config["seed"]))
     content_ids, task_ids = set(), set()
     for kind, bundles in sources.items():

@@ -44,7 +44,7 @@ PYTHONPATH=python python3 examples/training-loop/failure_curriculum_cpu.py \
 | `ExtractLearningSignals()` | 有序 `BehavioralObservation[]`, `policy_id=...` → `LearningSignals[]` | 可比历史的遗忘、同策略组的结果边界、已观测低频动作，三个标签分别保留 |
 | `ProposeSubskills()` | `prepare(tree, count=..., allocation=..., cases=...)` → `ModelInput`；`parse(response, ...)` → `SkillTreeAction` | 在已有 family 内提议新子技能，校验失败引用与重复，不执行模型 |
 | `PlanSkillPractice()` | `SkillTree, SkillTreeAction, budget=...` → `SkillPracticePlan` | explore 新增分支；exploit 调整已有分支的生成配额，输出新树与 `LearningTarget[]` |
-| `PlanPractice(generator_id, validation_policy_id)` | `targets` → `PracticePlan[]` | failure 或 random；kind 可为 task/environment/trajectory/example |
+| `PlanPractice(generator_id, validation_policy_id)` | `targets` → `PracticePlan[]` | failure/random/signal；signal 保留完整成功或失败来源；kind 可为 task/environment/trajectory/example |
 | `GeneratePractice()` | `prepare(plan, cases=...)` → `ModelInput`；`parse(response, plan=...)` → `PracticeDraft[]` | 严格响应 schema、数量和 family；输出仍是未准入草案 |
 | `ValidatePractice(validator_id)` | `plan(drafts)` → `ValidationPlan`；`assess(plan, evidence)` → `ValidationReport` | 结构检查 + 外部环境/参考解/验证器校准/目标忠实度/去重证据 |
 | `SelectPractice()` | `drafts, report, budget=..., base_pool_version=...` → `TaskPoolPlan` | 精确／语义去重、当前策略难度测量、显式探索与来源配额；不暗中补齐缺额 |
@@ -75,6 +75,8 @@ PYTHONPATH=python python3 examples/training-loop/failure_curriculum_cpu.py \
 `ProgressObservation` 绑定目标、策略、相同评价条件、唯一 sample IDs、成功数量与证据。遗忘比较必须指定前后策略且 `comparison_id` 相同；同一不可变样本不能换策略使用。稀有动作调度要求每个可用动作都有显式计数，缺失不是零次。`signal_mix` 的三个权重可以独立设为零，停用项不要求其额外输入。
 
 目标调度默认采用可替换的软评分：frontier 在成功率 0.5 附近较高，forgetting 使用成功率下降，rare_action 使用动作次数的倒数。它们不是 CoEvolve 的原论文判定公式。`ExtractLearningSignals` 单独实现论文第 3.1 节的布尔条件：可比近期窗口中曾得分至少 0.5、当前低于 0.5；同策略同组同时出现大于与小于 0.5 的结果；达到最小观测量后，已出现的动作模式频率低于阈值。未知／不完整结果不提供失败信号，未出现的动作不会伪装成论文中的 rare signal。[原论文](https://arxiv.org/html/2604.15840v1#S3.SS1)
+
+[CoEvolve-inspired retail 调用方](../examples/curriculum-harness/COEVOLVE.zh-CN.md)已将三类信号接到历史重放、独立工具探索、轨迹聚合、任务构造、native 校准和正式 harness 搜索。`conditioning="signal"` 接受完整成功或失败案例，由调用方提供已测量的信号目标；不会把成功的 rare/boundary 来源改标为失败。执行、转换和恢复留在调用方。真实模型效果尚未验收，GRPO 不在本版范围。
 
 练习难度使用 `PracticeMeasurement`，必须绑定当前策略与草案摘要；成功率范围和最小样本量是显式参数。`exploration_count` 预留独立探索槽，要求显式随机源；测量未知只能使用这些槽。`mix_counts=(("fixed", 2), ("random", 2), ("failure", 2))` 配合调用方的草案来源标签约束混合池。配额总和必须等于预算，某类不足时返回较小池和拒绝原因，不拿其他来源偷偷填满。
 

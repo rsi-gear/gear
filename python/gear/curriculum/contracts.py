@@ -177,7 +177,7 @@ class PracticePlan:
     target: LearningTarget
     generator_id: str
     validation_policy_id: str
-    conditioning: Literal["failure", "random"] = "failure"
+    conditioning: Literal["failure", "random", "signal"] = "failure"
     mutation: str = "Create new instances exercising the target capability."
     kind: PracticeKind = "task"
     schema_version: int = 1

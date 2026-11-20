@@ -35,10 +35,12 @@ def _plan(value: PracticePlan) -> None:
         "environment",
         "trajectory",
         "example",
-    ) or value.conditioning not in ("failure", "random"):
+    ) or value.conditioning not in ("failure", "random", "signal"):
         raise ValueError("unsupported practice kind or conditioning")
     if value.conditioning == "failure" and not value.target.source_case_ids:
         raise ValueError("failure-conditioned practice requires source cases")
+    if value.conditioning == "signal" and not value.target.source_case_ids:
+        raise ValueError("signal-conditioned practice requires source cases")
     if value.conditioning == "random" and value.target.source_case_ids:
         raise ValueError("random baseline must not contain failure case IDs")
 
@@ -47,7 +49,7 @@ def _plan(value: PracticePlan) -> None:
 class PlanPractice(Module):
     generator_id: str
     validation_policy_id: str
-    conditioning: Literal["failure", "random"] = "failure"
+    conditioning: Literal["failure", "random", "signal"] = "failure"
     mutation: str = "Create new instances exercising the target capability."
     kind: PracticeKind = "task"
 
@@ -133,8 +135,11 @@ class GeneratePractice(Module):
         selected: list[JSON] = []
         for key in plan.target.source_case_ids:
             case = values.get(key)
-            if case is None or case.outcome != "failure":
-                raise ValueError("generation requires the declared complete failure cases")
+            allowed = ("success", "failure") if plan.conditioning == "signal" else ("failure",)
+            if case is None or case.outcome not in allowed:
+                raise ValueError(
+                    "generation requires declared complete " + plan.conditioning + " cases"
+                )
             if case.record.family not in plan.target.families:
                 raise ValueError("source family is outside the practice plan")
             selected.append({"case_id": key, **json_object(case)})
@@ -146,7 +151,15 @@ class GeneratePractice(Module):
             "example": " Return a procedural question and answer in data.question and data.answer. Mark it as synthetic practice; do not claim a native trajectory or verified success.",
         }
         return ModelInput(
-            self.prompt + instructions[plan.kind],
+            self.prompt
+            + instructions[plan.kind]
+            + (
+                " In signal mode, preserve the observed outcomes, including successes. "
+                "The caller's target describes the behavioral signal to explore; "
+                "do not relabel a successful source as a failure."
+                if plan.conditioning == "signal"
+                else ""
+            ),
             schema,
             {"plan": json_value(plan), "cases": selected},
         )

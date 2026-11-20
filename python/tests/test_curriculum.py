@@ -125,6 +125,7 @@ assert not any(name in sys.modules for name in ('torch', 'openai', 'psutil', 'ai
             MergeFailureMemory(),
             SelectLearningTargets(),
             PlanPractice(generator.identity, validator.identity),
+            PlanPractice(generator.identity, validator.identity, "signal"),
             generator,
             validator,
             SelectPractice(),
@@ -299,6 +300,32 @@ assert not any(name in sys.modules for name in ('torch', 'openai', 'psutil', 'ai
                 generator.parse(invalid, plan=plan)
         with self.assertRaises(ValueError):
             GeneratePractice("changed prompt").parse(response, plan=plan)
+
+    def test_signal_generation_preserves_success_and_rejects_unknown_sources(self):
+        cases, generator, validator, _, _, _ = fixture()
+        success = ExtractOutcomeCases()((record("rare-success", passed=True),))[0]
+        target = LearningTarget(
+            "rare", "Explore the observed rare action", 1, (success.case_id,), ("family",)
+        )
+        plan = PlanPractice(generator.identity, validator.identity, "signal")((target,))[0]
+        prepared = generator.prepare(plan, cases=cases + (success,))
+        self.assertEqual(prepared.data["cases"][0]["outcome"], "success")
+        self.assertEqual(len(prepared.data["cases"]), 1)
+        self.assertIn("do not relabel", prepared.prompt)
+        with self.assertRaises(ValueError):
+            generator.prepare(replace(plan, conditioning="failure"), cases=(success,))
+        with self.assertRaises(ValueError):
+            generator.prepare(plan, cases=())
+        unknown = ExtractOutcomeCases()((record("unknown", passed=None),))[0]
+        with self.assertRaises(ValueError):
+            generator.prepare(
+                replace(plan, target=replace(target, source_case_ids=(unknown.case_id,))),
+                cases=(unknown,),
+            )
+        with self.assertRaises(ValueError):
+            PlanPractice(generator.identity, validator.identity, "signal")(
+                (replace(target, source_case_ids=()),)
+            )
 
     def test_validation_fails_closed_for_missing_or_untrusted_evidence(self):
         _, _, validator, _, _, draft = fixture()
