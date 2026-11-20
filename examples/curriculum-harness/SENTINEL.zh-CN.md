@@ -2,7 +2,7 @@
 
 当前实现可恢复的调用链：实际 solver 执行与评分 → 训练轨迹去重与抽样 → 合并失败记忆 → 选择目标 → 实际工具探索 → 参考重放 → 编写新任务 → 执行校准与语义检查 → 固定／生成任务混合池 → 新 run 的正式 harness 搜索。使用固定权重的模型服务和 CPU 上的 Tau2 retail 工具，**不做 GPU 训练**。
 
-这是 [SENTINEL §3.3–3.4](https://arxiv.org/html/2606.12908v1#S3.SS3) 的部分接入：先执行参考轨迹，再生成对应请求。retail 混合池已接入正式搜索并通过离线模型的实际 CLI／worker 集成；该配方的真实搜索效果对照和 mastery 探针仍待验收，没有导出一个宣称完整复现的 `gear.algorithms.SENTINEL`。
+这是 [SENTINEL §3.3–3.4](https://arxiv.org/html/2606.12908v1#S3.SS3) 的部分接入：先执行参考轨迹，再生成对应请求。retail 混合池和三组对照入口已通过离线模型的实际 CLI／worker 集成；该配方的真实搜索效果对照和 mastery 探针仍待验收，没有导出一个宣称完整复现的 `gear.algorithms.SENTINEL`。
 
 ## 实现与证据
 
@@ -117,11 +117,45 @@ PYTHONPATH=/path/to/gear/python \
 
 ## 验证与待办
 
+### 固定／随机／failure 对照入口
+
+[sentinel_experiment.py](sentinel_experiment.py) 在调用方组合现有采集、生成、混合池和正式搜索。三组初始 harness、固定模型、任务执行条件、每轮搜索上限和池大小一致；fixed 全部使用原始任务，random／failure 使用相同固定份额加生成份额。两种生成共用实际探索、参考重放、校准、写作和语义审查。随机组仅从预先声明的 `random_targets` 均匀抽取一个学习目标，不接收结果、失败记忆或案例；failure 组只接收当前 harness 的训练探针。当前对照不测跨轮 failure memory 的独立收益。
+
+直接运行生成器时，`conditioning` 可设为 `random`（省略时为 `failure`）；random 必须同时传入非空、无重复的 `random_targets`，`observations=[]`，且不能传入 `history`。两种模式不互相回退。写作者只描述客户目标、已知事实和约束，不要求把认证／确认步骤写进私有用户指令。
+
+实验配置包含以下字段；三组配置在首次模型调用前冻结：
+
+| 字段 | 内容 |
+| --- | --- |
+| `schema_version`, `training` | `1`；training 含 `family/database/user_id/fixed`，fixed 条目与混合池一致 |
+| `validation`, `test` | 与正式搜索相同的固定独立任务数组；启动前对所有原始任务校准并检查隔离 |
+| `seeds`, `rounds` | 不重复的显式抽样 seed、1–8 轮；seed 控制任务抽样和组别顺序，不控制模型采样 |
+| `harness`, `model`, `meta_model`, `effort` | 初始提示、solver／生成模型、正式搜索 Meta 模型、推理设置 |
+| `max_steps`, `calls_per_task`, `calls_per_generation`, `calls_per_search` | 每次执行步数，每个采集／评测任务、每次生成、每轮正式搜索的逻辑调用配额；不宣称 token／美元硬上限 |
+| `fixed_count`, `generated_count`, `generation_attempts` | 固定份额、生成份额、每组每轮预先限定的生成尝试数；fixed 原始池至少满足两份额之和 |
+| `random_targets` | 不依赖失败观测的已授权训练领域目标列表 |
+| `max_characters`, `target_characters`, `max_repairs` | 与正式搜索相同的候选约束 |
+
+使用前述 `GEAR_COMMAND`、`GEAR_PYTHON`、`PYTHONPATH` 设置，命令为：
+
+```sh
+/tmp/gear-sentinel-env/bin/python examples/curriculum-harness/sentinel_experiment.py \
+  --input /path/to/preregistered-retail-study.json \
+  --workspace /tmp/gear-sentinel-study \
+  --tau2-source /tmp/gear-sentinel-tau2
+```
+
+`--preflight` 不执行模型请求。所有尝试均记录，不在观察到拒绝后追加尝试。池缺额时，该轮不启动搜索，保留当前 harness，并将整份研究标记 `comparable=false`；不会用固定任务填补生成份额。未完成测试不会折算为 0 分或从分母剔除，此时通过率为 `null`，不计算组间差值。
+
+所有 seed／组／轮完成选型后，先封存 `test-admission.json`，再评测相同的固定 test；validation／test 不进入生成或 Meta。相同 seed 内完全相同的 harness 共用同一份采集／测试观测，避免重复收费及引入无意义的模型随机差异。配置、源码、编译 CLI、原生后端、provider、任务和最终选型均绑定摘要；恢复重新检查原记录并复用调用键。汇总计数来自唯一原生回执，不累加复用观测；配额上限与实际消耗分别报告。结果只给出描述性逐 seed 配对差值，不声称统计显著性。
+
+新增 5 项检查覆盖随机组无失败输入、实际 native 校准与离线重放、未完成观测的指标、三组正式运行及恢复、全拒绝后的缺额和不可比较状态。测试中真实执行 Gear CLI／worker、Tau2 工具与 DB 评分；模型仍为明确替身，不构成真实提升证据。
+
 ```sh
 GEAR_TEST_SENTINEL_RUNTIME=1 \
 GEAR_SENTINEL_TAU2_PATH=/tmp/gear-sentinel-tau2 \
 PYTHONPATH=python:python/tests /tmp/gear-sentinel-env/bin/python \
-  -m unittest test_sentinel_retail test_sentinel_collect test_sentinel_pool test_sentinel_search test_formal_curriculum_harness -v
+  -m unittest test_sentinel_retail test_sentinel_collect test_sentinel_pool test_sentinel_search test_sentinel_experiment test_formal_curriculum_harness -v
 ```
 
 本批共 47 项定向检查通过：45 项工具、provider、恢复与隔离检查，另 2 项实际 CLI／worker 集成。正式集成覆盖超长候选拒绝与修订、训练门槛、6 个真实 native 任务执行、丢失外层返回后的同 run 恢复、扩池后第二个独立 run 以及缺额池拒绝准入；最终测试未打开。模型与语义审查均为明确替身，不能作为真实模型效果证据。此前 58 项 curriculum 纯算子回归记录保留；原始单轮诊断测试仍使用明确源失败夹具，采集和正式评分测试则执行真实工具与 native verifier。
