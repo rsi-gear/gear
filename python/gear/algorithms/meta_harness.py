@@ -327,6 +327,15 @@ class MetaHarness(Algorithm):
             diagnosis=diagnosis,
         )
 
+    @staticmethod
+    def _evidence_key(
+        state: StateTree, candidate: CandidateRef, phase: str, page: int
+    ) -> str:
+        return (
+            f"round-{state.data.get('round', 0)}/evidence/"
+            f"{phase}/{candidate.candidate_id}/{candidate.digest}/{page}"
+        )
+
     def _read_evidence(
         self,
         state: StateTree,
@@ -339,7 +348,9 @@ class MetaHarness(Algorithm):
             "read_evidence",
             self.evidence_reader(
                 ReadEvidenceInput(evidence.spec),
-                key=f"round-{state.data.get('round', 0)}/evidence/0",
+                key=self._evidence_key(
+                    state, evidence.spec.candidate, phase, 0
+                ),
             ),
             evidence_spec=json_value(evidence.spec),
             pages=[],
@@ -451,6 +462,14 @@ class MetaHarness(Algorithm):
                 state = state.updated(history=[*self._history(state), failed])
             return self._next_round(view, state, f"{phase} operation failed")
         value = pending.value
+        if phase == "diagnose":
+            # OperatorRuntime.settle exposes the Meta payload directly. A declined
+            # proposer has no payload, so the public value is null.
+            if value is None:
+                return self._next_round(view, state, "Meta-Harness proposer declined")
+            if not isinstance(value, dict):
+                raise ValueError("Meta-Harness diagnosis result must be an object")
+            return self._generate(view, state, value)
         if not isinstance(value, dict):
             raise ValueError("Meta-Harness operator result must be an object")
 
@@ -479,7 +498,9 @@ class MetaHarness(Algorithm):
                     "read_evidence",
                     self.evidence_reader(
                         ReadEvidenceInput(spec, value["cursor"]),
-                        key=f"round-{state.data.get('round', 0)}/evidence/{len(pages)}",
+                        key=self._evidence_key(
+                            state, spec.candidate, state.data["resume_phase"], len(pages)
+                        ),
                     ),
                     pages=pages,
                 )
@@ -508,13 +529,6 @@ class MetaHarness(Algorithm):
                 )
                 return self._diagnose(view, state)
             return self._next_round(view, state, "configured Meta-Harness iterations complete")
-
-        if phase == "diagnose":
-            if type(value.get("declined")) is not bool or not isinstance(value.get("data"), dict):
-                raise ValueError("Meta-Harness diagnosis envelope is invalid")
-            if value["declined"]:
-                return self._next_round(view, state, "Meta-Harness proposer declined")
-            return self._generate(view, state, value["data"])
 
         if phase == "generate":
             candidate = value.get("candidate")

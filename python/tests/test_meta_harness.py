@@ -165,11 +165,11 @@ class MetaHarnessTests(unittest.TestCase):
 
         first_generation = self.complete(
             diagnosis,
-            {"declined": False, "data": {
+            {
                 "summary": "try an alternate parser strategy",
                 "base_candidate_id": "anchor",
                 "hypothesis": "Use a parser that preserves quoted fields.",
-            }},
+            },
         )
         self.assertEqual(first_generation.calls[0].effect["input"]["base"]["candidate_id"], "anchor")
         older = CandidateRef("run", "older-rejected", digest("large historical source"))
@@ -209,16 +209,58 @@ class MetaHarnessTests(unittest.TestCase):
 
         second_generation = self.complete(
             second_diagnosis,
-            {"declined": False, "data": {
+            {
                 "summary": "reuse the rejected implementation's useful mechanism",
                 "base_candidate_id": "older-rejected",
                 "hypothesis": "Extend the older implementation with robust quoting.",
-            }},
+            },
         )
         self.assertEqual(
             second_generation.calls[0].effect["input"]["base"]["candidate_id"],
             "older-rejected",
         )
+
+    def test_evidence_page_keys_include_phase_candidate_and_page(self):
+        older = CandidateRef("run", "older", digest("older source"))
+
+        def pages(candidate, phase):
+            evidence = self.evidence(candidate, (1, 0))
+            initial = self.algorithm._read_evidence(
+                StateTree().updated(round=0), evidence, phase, ()
+            )
+            first_key = initial.calls[0].ref.key
+            self.view.results = Results(
+                (
+                    CallResult(
+                        initial.calls[0].ref,
+                        "succeeded",
+                        {"complete": False, "cursor": "next", "records": []},
+                    ),
+                )
+            )
+            continuation = self.algorithm.step(self.view, initial.state)
+            return first_key, continuation.calls[0].ref.key
+
+        baseline_keys = pages(self.anchor, "baseline")
+        candidate_keys = pages(older, "evaluate")
+        self.assertEqual(len(set((*baseline_keys, *candidate_keys))), 4)
+        self.assertIn("/baseline/anchor/", baseline_keys[0])
+        self.assertIn("/baseline/anchor/", baseline_keys[1])
+        self.assertIn("/evaluate/older/", candidate_keys[0])
+        self.assertIn("/evaluate/older/", candidate_keys[1])
+        self.assertTrue(baseline_keys[0].endswith("/0"))
+        self.assertTrue(baseline_keys[1].endswith("/1"))
+        self.assertTrue(candidate_keys[0].endswith("/0"))
+        self.assertTrue(candidate_keys[1].endswith("/1"))
+
+    def test_declined_proposer_payload_advances_without_generation(self):
+        self.view.budget["rounds"] = 1
+        baseline_step = self.algorithm.step(self.view, StateTree())
+        baseline = self.evidence(self.anchor, (1, 0))
+        diagnosis = self.complete(baseline_step, json_value(baseline))
+        result = self.complete(diagnosis, None)
+        self.assertEqual(result.terminal.kind, "stop")
+        self.assertEqual(result.calls, ())
 
     def test_best_common_seed_score_is_nominated_after_configured_rounds(self):
         baseline_step = self.algorithm.step(self.view, StateTree())
@@ -226,11 +268,11 @@ class MetaHarnessTests(unittest.TestCase):
         diagnosis = self.complete(baseline_step, json_value(baseline))
         generation = self.complete(
             diagnosis,
-            {"declined": False, "data": {
+            {
                 "summary": "change one general mechanism",
                 "base_candidate_id": "anchor",
                 "hypothesis": "Improve general parsing.",
-            }},
+            },
         )
         first = CandidateRef("run", "first", digest("first"))
         evaluation = self.complete(generation, {"candidate": json_value(first)})
@@ -238,11 +280,11 @@ class MetaHarnessTests(unittest.TestCase):
         diagnosis2 = self.complete(evaluation, json_value(self.evidence(first, (0, 0))))
         generation2 = self.complete(
             diagnosis2,
-            {"declined": False, "data": {
+            {
                 "summary": "keep searching after a regression",
                 "base_candidate_id": "first",
                 "hypothesis": "Improve the general field handling.",
-            }},
+            },
         )
         second = CandidateRef("run", "second", digest("second"))
         self.view.candidates = (self.anchor, first, second)

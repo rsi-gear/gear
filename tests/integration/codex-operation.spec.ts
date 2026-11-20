@@ -26,6 +26,7 @@ import type { ExperienceRecord, ExperienceContext } from '../../src/domain/exper
 import type { OperatorMaterial } from '../../src/domain/operator-run.js'
 import { freezeAlgorithmSource } from '../../src/adapters/python/source.js'
 import { PythonAlgorithmWorker } from '../../src/adapters/python/worker.js'
+import { OperatorRuntime } from '../../src/runtime/operator-runtime.js'
 import type { SearchView } from '../../src/domain/algorithm-wire.js'
 import type * as V2 from '../../src/domain/algorithm-wire-v2.js'
 
@@ -119,7 +120,7 @@ async function fixture(mode = 'success', adapter: 'pi' | 'dsh' = 'pi', prepare =
     evidence: [
       {
         candidate_id: 'anchor',
-        task_id: 'seed',
+        task_id: taskIds[0]!,
         repetition: 0,
         score: 0,
         status: 'valid',
@@ -316,6 +317,37 @@ describe('formal Codex operation runner', () => {
     }
     const algorithm = { name: 'gear.algorithms.meta_harness:MetaHarness', options: {}, protocol_version: 2 as const }
     const state: V2.AlgorithmState = { version: 1, data: {} }
+    const settleMeta = async (decision: V2.Decision, receipt: Awaited<ReturnType<typeof f.provider.submit>>) => {
+      const call = decision.calls[0]!
+      const operationId = f.request.operationId
+      const entry: {
+        id: string
+        requestDigest: string
+        call: (typeof decision.calls)[number]
+        status: string
+        operationIds: string[]
+        candidateId: null
+        materials: never[]
+        reservedReadBytes: number
+        result?: { value: V2.Json }
+      } = {
+        id: call.ref.request_digest,
+        requestDigest: call.ref.request_digest,
+        call,
+        status: 'submitted',
+        operationIds: [operationId],
+        candidateId: null,
+        materials: [],
+        reservedReadBytes: 0,
+      }
+      const journal = {
+        operators: { calls: [entry], artifacts: [] },
+        operations: [{ request: { operationId }, status: 'complete', reservedAttempts: 0, receipt }],
+      }
+      const runtime = new OperatorRuntime({ validateSchema() {} } as never, f.provider as never)
+      await runtime.settle(journal as never, async () => {}, signal())
+      return entry.result!.value
+    }
     const completed = (decision: V2.Decision, value: V2.Json, artifacts: V2.ArtifactRef[] = []) => {
       view.results.push({
         ref: decision.state.data.pending as V2.CallRef,
@@ -374,7 +406,9 @@ describe('formal Codex operation runner', () => {
       const firstReceipt = await submitMeta(firstMeta, 0)
       expect(firstReceipt.result.status).toBe('complete')
       expect(firstReceipt.result.data).toMatchObject({ data: { base_candidate_id: 'anchor' } })
-      completed(firstMeta, firstReceipt.result.data)
+      const firstPublicValue = await settleMeta(firstMeta, firstReceipt)
+      expect(firstPublicValue).toMatchObject({ base_candidate_id: 'anchor' })
+      completed(firstMeta, firstPublicValue)
 
       const generation = await worker.stepV2(view, firstMeta.state, algorithm, signal())
       expect(generation.calls[0]?.effect.kind).toBe('candidate')
@@ -388,7 +422,9 @@ describe('formal Codex operation runner', () => {
       const secondReceipt = await submitMeta(secondMeta, 1)
       expect(secondReceipt.result.status).toBe('complete')
       expect(secondReceipt.result.data).toMatchObject({ data: { base_candidate_id: 'older-rejected' } })
-      completed(secondMeta, secondReceipt.result.data)
+      const secondPublicValue = await settleMeta(secondMeta, secondReceipt)
+      expect(secondPublicValue).toMatchObject({ base_candidate_id: 'older-rejected' })
+      completed(secondMeta, secondPublicValue)
 
       const selectedParent = await worker.stepV2(view, secondMeta.state, algorithm, signal())
       expect(selectedParent.calls[0]?.effect).toMatchObject({ kind: 'candidate', input: { base: older } })

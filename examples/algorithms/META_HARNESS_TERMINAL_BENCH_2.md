@@ -25,14 +25,14 @@ Captured baseline and candidate trajectories are passed from the `Execute` resul
 
 Prepare a Gear project from the official [Terminal-Bench 2.1 dataset](https://github.com/harbor-framework/terminal-bench-2-1/tree/12b7565679ce5006230b820666353673a133db93), including its pinned `tasks/dataset.toml`. Gear's holdout import deterministically assigns task groups to seed and held-out partitions; keep the resulting `splits.json` and import digest with the run. Configure the Target profile to run the selected Terminal-Bench agent harness and the Meta profile for diagnosis/generation. Record the actual model identifiers, harness revision, concurrency, and costs in the resulting run report.
 
-Set these project limits in `gear.yaml` before running:
+Set these project limits in `gear.yaml` before running. The `max_evaluations` value reserves the maintainer-required pre-retry allowance for this split: `8 × 71 seed tasks + 4 × 18 held-out tasks = 640` physical evaluations at two repetitions. Any retries require additional budget and are not included in this minimum.
 
 ```yaml
 budget:
   rounds: 1
   max_candidates: 1
   repetitions: 2
-  max_evaluations: 400
+  max_evaluations: 640
 generation:
   max_model_requests: 20
   max_tokens: 120000

@@ -23,7 +23,7 @@
     "search_iterations": 1,
     "generated_candidates_per_iteration": 1,
     "max_candidates": 1,
-    "max_evaluations": 400,
+    "max_evaluations": 640,
     "max_model_requests": 20,
     "max_generation_tokens": 120000,
     "gear_held_out_gate": "Enabled; Gear's deterministic holdout split reserves about 20% of task groups from the 89-task set, and held-out tasks are not exposed to the proposer."
