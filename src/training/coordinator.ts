@@ -13,6 +13,11 @@ import { proposalInputsDigest, proposalSpec, validateIterationTrainingSchedule }
 
 const emptyUsage = (): T.TrainingUsage => ({ gpuSeconds: 0, rolloutTokens: 0, groupResamples: 0 })
 const terminal = (run: T.ModelTrainingRun): boolean => !!run.decision
+function keyedId(prefix: string, namespace: string, key: string): string {
+  requireContract(typeof key === 'string' && key.trim() === key && key.length > 0 && key.length <= 256
+    && !/[\u0000-\u001f\u007f]/u.test(key), 'invalid-training-idempotency-key', 'training idempotency key must contain 1–256 printable characters without surrounding whitespace')
+  return `${prefix}_${digestJson([namespace, key]).slice(7, 39)}`
+}
 export const trainingCompatibilityDigest = (request: T.TrainingRequest): string => digestJson({
   backend: request.trainer.backend, runtimeLock: request.trainer.runtimeLock, hyperparametersRef: request.trainer.hyperparametersRef,
   placement: request.trainer.placement ?? 'separate', trainingDeviceCount: request.trainingDevices.length,
@@ -31,9 +36,19 @@ export interface ModelPublisher {
 export class ModelTrainingCoordinator {
   constructor(readonly store: ModelTrainingStore, readonly trainer: T.ModelTrainer, readonly evaluator: T.ModelEvaluator, readonly endpointPreparer?: T.ModelEndpointPreparer) {}
 
-  async createExperiment(input: unknown): Promise<T.ModelExperimentState> {
+  async createExperiment(input: unknown, idempotencyKey?: string): Promise<T.ModelExperimentState> {
     const spec = parseModelTrainingSpec(input)
     this.assertEndpointAuthorization(spec)
+    const id = idempotencyKey === undefined ? `exp_${randomUUID().replaceAll('-', '')}` : keyedId('exp', 'training-init-v1', idempotencyKey)
+    const specDigest = digestJson(spec)
+    const replay = async () => {
+      const saved = await this.store.load(id)
+      requireContract(saved.specDigest === specDigest, 'training-idempotency-drift', 'experiment creation key was already used for another frozen specification')
+      return saved
+    }
+    if (idempotencyKey !== undefined) {
+      try { return await replay() } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+    }
     const initial = parseModelVersion(await this.store.readJson(spec.initialModel))
     const reference = parseModelVersion(await this.store.readJson(spec.referenceModel))
     await validateIterationTrainingSchedule(this.store, spec, initial)
@@ -45,22 +60,30 @@ export class ModelTrainingCoordinator {
       ...Object.values(spec.datasets).flatMap(d => [d.snapshotRef, ...d.tasks.flatMap(t => [t.taskRef, t.environmentRef])]),
       ...(spec.iteration?.proposals.map(proposal => proposal.sourceRef) ?? [])]) await this.store.readBytes(ref)
     if (spec.offlineTraining) await validateOfflineDataset(this.store, spec, initial)
-    const state: T.ModelExperimentState = { schemaVersion: 1, id: `exp_${randomUUID().replaceAll('-', '')}`,
-      spec, specDigest: digestJson(spec), champion: { modelRef: spec.initialModel, revision: 0, baselineEvidence: {} }, runs: {}, releases: [], usage: emptyUsage() }
+    const state: T.ModelExperimentState = { schemaVersion: 1, id,
+      spec, specDigest, champion: { modelRef: spec.initialModel, revision: 0, baselineEvidence: {} }, runs: {}, releases: [], usage: emptyUsage() }
     const now = Date.now()
     if (spec.iteration) state.iteration = { schemaVersion: 1, status: 'running', control: { sequence: 0, action: 'start' },
       startedAt: new Date(now).toISOString(), deadlineAt: new Date(now + spec.iteration.maxWallClockSeconds * 1000).toISOString(),
       rounds: {}, nextProposalIndex: 0, consecutiveRejected: 0 }
     if (spec.endpointPreparation) state.endpointControl = { sequence: 0, action: 'start',
       deadlineAt: state.iteration?.deadlineAt ?? new Date(now + (this.endpointPreparer!.maxRuntimeSeconds ?? 3600) * 1000).toISOString() }
-    await this.store.create(state)
+    try { await this.store.create(state) }
+    catch (error) {
+      if (idempotencyKey === undefined || (error as { code?: string }).code !== 'experiment-exists') throw error
+      return replay()
+    }
     return state
   }
 
-  async admit(experimentId: string, iterationSequence?: number): Promise<T.ModelTrainingRun> {
+  async admit(experimentId: string, iterationSequence?: number, idempotencyKey?: string): Promise<T.ModelTrainingRun> {
+    const replayId = idempotencyKey === undefined ? undefined : keyedId('train', experimentId, idempotencyKey)
     await this.assertCurrentExperiment(experimentId)
     return this.store.transaction(experimentId, async state => {
       const iteration = state.iteration
+      requireContract(idempotencyKey === undefined || (!state.spec.iteration && iterationSequence === undefined),
+        'training-idempotency-scope', 'keyed admission is for explicitly controlled jobs; automatic iteration retains its ordered round intent')
+      if (replayId && state.runs[replayId]) return structuredClone(state.runs[replayId]!)
       if (state.spec.iteration) {
         requireContract(iteration && iterationSequence === iteration.control.sequence && iteration.status === 'running'
           && iteration.control.action === 'start', 'iteration-control-stale', 'automatic admission requires the current running iteration intent')
@@ -91,7 +114,7 @@ export class ModelTrainingCoordinator {
         generatedTaskExclusionRef = await this.store.putJson({ ids: privateTasks.map(task => digestJson(task.id)),
           families: privateTasks.map(task => digestJson(task.family)), taskDigests: privateTasks.map(task => task.taskRef.digest), fingerprints, instructions })
       }
-      const id = `train_${randomUUID().replaceAll('-', '')}`
+      const id = replayId ?? `train_${randomUUID().replaceAll('-', '')}`
       const request = parseTrainingRequest({ schemaVersion: spec.schemaVersion, ...(spec.schemaVersion === 2 ? { deployment: spec.deployment } : {}), trainingRunId: id, experimentId, parentModel, parentModelRef: state.champion.modelRef,
         ...(spec.stages ? { stages: spec.stages, ...(generatedTaskExclusionRef ? { generatedTaskExclusionRef } : {}), behaviorPolicyRef: state.champion.modelRef,
           updateStart: { mode: parentModel.trainerCheckpointRef ? 'resume' : 'cold-start', modelRef: state.champion.modelRef,

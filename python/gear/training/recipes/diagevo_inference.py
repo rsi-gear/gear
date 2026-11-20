@@ -235,7 +235,9 @@ class FrozenHFSolver:
 
     def _capture(self, request, generated):
         key, question_id, messages = request["key"], request["questionId"], request["messages"]
-        name = "local-diagevo/" + _digest(request)[7:]
+        # Fresh challenger capture IDs become task IDs in the next solver job.
+        # Keep their immutable identity legal as a single Harbor task name.
+        name = "local-diagevo-" + _digest(request)[7:]
         task = self.store.put_json(
             {
                 "kind": "diagevo-solver-question",

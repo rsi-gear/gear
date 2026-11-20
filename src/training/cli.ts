@@ -162,6 +162,7 @@ export async function trainingCommand(argv: string[]): Promise<unknown> {
     usage: 'gear training ACTION --config CONTROLLER.json [arguments]',
     actions: ['node-probe DEPLOYMENT.json NODE_REF', 'preflight-deployment', 'freeze-deployment', 'freeze-evaluation-profile', 'put-json FILE', 'seal-hf DIRECTORY', 'seal-hf-node NODE_DIRECTORY', 'seal-dataset DIRECTORY', 'seal-sft INPUT.json', 'validate SPEC', 'init SPEC', 'admit EXP', 'preflight EXP RUN',
       'seal-script SOURCE_DIRECTORY MODULE:FACTORY', 'run SPEC', 'iterate SPEC|EXP', 'run SCRIPT_ID', 'run EXP [RUN]', 'advance EXP [RUN]', 'status EXP [RUN]', 'pause EXP [RUN]', 'resume EXP [RUN]', 'close EXP [RUN]', 'publish EXP', 'rollback EXP RELEASE'],
+    idempotency: 'init SPEC and admit EXP accept --idempotency-key KEY for replay after a lost reply; keys bind immutable experiment or admission identities',
   }
   if (action === 'node-probe') {
     requireContract(args.length === 2, 'usage', 'training node-probe DEPLOYMENT.json NODE_REF')
@@ -173,8 +174,18 @@ export async function trainingCommand(argv: string[]): Promise<unknown> {
   const index = args.indexOf('--config')
   requireContract(index >= 0 && !!args[index + 1], 'usage', 'gear training ACTION --config CONTROLLER.json [arguments]')
   const file = args.splice(index, 2)[1]!
+  let idempotencyKey: string | undefined
+  const keyIndex = args.indexOf('--idempotency-key')
+  if (keyIndex >= 0) {
+    requireContract(['init', 'admit'].includes(action!) && !!args[keyIndex + 1] && !args[keyIndex + 1]!.startsWith('--'),
+      'usage', '--idempotency-key requires a value and is supported by native init or admit')
+    idempotencyKey = args.splice(keyIndex, 2)[1]!
+  }
   const rawConfig = JSON.parse(await readFile(file, 'utf8'))
-  if (rawConfig.kind === 'training-script-controller') return scriptCommand(action!, args, parseScriptControllerConfig(rawConfig))
+  if (rawConfig.kind === 'training-script-controller') {
+    requireContract(idempotencyKey === undefined, 'usage', 'script controllers use their existing script job identity')
+    return scriptCommand(action!, args, parseScriptControllerConfig(rawConfig))
+  }
   if (args[0]?.startsWith('exp_') && ['status', 'resume', 'advance', 'run', 'iterate', 'pause', 'close', 'admit'].includes(action!)) {
     requireContract(typeof rawConfig.storeRoot === 'string' && rawConfig.storeRoot.startsWith('/'), 'invalid-controller-config', 'historical inspection requires an absolute storeRoot')
     const saved = await new ModelTrainingStore(rawConfig.storeRoot).load(args[0])
@@ -281,7 +292,7 @@ export async function trainingCommand(argv: string[]): Promise<unknown> {
     requireContract(args.length === 1, 'usage', `training ${action} SPEC.json --config CONTROLLER.json`)
     const spec = parseModelTrainingSpec(JSON.parse(await readFile(args[0]!, 'utf8')))
     const { coordinator } = trainingController(config, spec, store)
-    return action === 'init' ? coordinator.createExperiment(spec) : { valid: true, runtimeValidation: spec.trainer.runtimeLock.validation }
+    return action === 'init' ? coordinator.createExperiment(spec, idempotencyKey) : { valid: true, runtimeValidation: spec.trainer.runtimeLock.validation }
   }
   const experimentId = args.shift()
   requireContract(experimentId, 'usage', 'an experiment ID is required')
@@ -294,7 +305,7 @@ export async function trainingCommand(argv: string[]): Promise<unknown> {
     if (action === 'close') return iteration.stop(experimentId)
     return iteration[action as 'advance' | 'pause'](experimentId)
   }
-  if (action === 'admit') { requireContract(args.length === 0, 'usage', 'admit accepts only an experiment ID'); return coordinator.admit(experimentId) }
+  if (action === 'admit') { requireContract(args.length === 0, 'usage', 'admit accepts only an experiment ID'); return coordinator.admit(experimentId, undefined, idempotencyKey) }
   if (action === 'publish' || action === 'rollback') {
     requireContract(args.length === (action === 'rollback' ? 1 : 0) && !!config.activationPath, 'usage', 'publish EXP or rollback EXP RELEASE requires activationPath')
     return coordinator.publish(experimentId, publisher, args[0])

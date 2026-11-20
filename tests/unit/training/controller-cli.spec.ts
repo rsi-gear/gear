@@ -49,6 +49,18 @@ describe('versioned public training controller', () => {
     expect(() => parseTrainingControllerConfig({ ...config, evaluationNode: {} })).toThrow('externally prepared')
     expect(() => parseTrainingControllerConfig({ ...config, evaluationGateway: {} })).toThrow('externally prepared')
   })
+  it('exposes stable init and admit keys without changing status or automatically resuming a job', async () => {
+    const file = join(root, 'controller.json'), specFile = join(root, 'spec.json')
+    await writeFile(file, JSON.stringify(config)); await writeFile(specFile, JSON.stringify(v2spec(legacy)))
+    const args = ['init', specFile, '--idempotency-key', 'round-0/solver', '--config', file]
+    const first = await trainingCommand(args) as ModelExperimentState
+    expect(await trainingCommand(args)).toEqual(first)
+    const admit = ['admit', first.id, '--config', file, '--idempotency-key', 'training']
+    const run = await trainingCommand(admit) as ModelTrainingRun
+    expect(await trainingCommand(admit)).toEqual(run)
+    expect(Object.keys((await store.load(first.id)).runs)).toEqual([run.id])
+    await expect(trainingCommand(['status', first.id, '--idempotency-key', 'bad', '--config', file])).rejects.toMatchObject({ code: 'usage' })
+  })
   it('run SPEC creates one experiment and run; run EXP RUN follows the existing identity', async () => {
     const file = join(root, 'controller.json'), specFile = join(root, 'spec.json')
     const source = join(root, 'recipe'); await mkdir(source)

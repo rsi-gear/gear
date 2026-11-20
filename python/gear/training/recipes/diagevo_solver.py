@@ -13,6 +13,7 @@ from pathlib import Path
 
 from gear.core import clone
 from gear.core._json import json_value
+from gear.core.base import construct_module
 from gear.training.data import samples as native_samples
 from gear.training.data.samples import seal_batch
 from gear.training.data.trajectories import RawTrajectory
@@ -34,7 +35,75 @@ from gear.training.recipes.diagevo_data import (
 )
 from gear.training.recipes.diagevo_round import RoundEvidence
 from gear.training.runtime.implementation import stage_identity
-from gear.training.storage.content import require
+from gear.training.storage.content import digest_json, require
+
+
+def native_component(spec):
+    """Rebuild only the supported native recipe components from stored descriptions."""
+    from gear.training.recipes.diagevo_challenger import DiagEvoChallengerReward
+    from gear.training.recipes.diagevo_generation import DiagEvoQuestionPrompt
+    from gear.training.recipes.diagevo_memory import DiagEvoDiagnostician
+
+    allowed = {
+        cls.__module__ + ":" + cls.__qualname__: cls
+        for cls in (
+            DiagEvoPolicy,
+            DiagEvoChallengerReward,
+            DiagEvoQuestionPrompt,
+            DiagEvoDiagnostician,
+        )
+    }
+
+    def resolve(name):
+        require(name in allowed, "diagevo-component", "unsupported native DiagEvo component")
+        return allowed[name]
+
+    return construct_module(spec, resolve)
+
+
+def read_native_curriculum(store, curriculum_ref, challenger_request_ref, *, request=None):
+    """Recompute the complete pool before task authoring or native optimization."""
+    from gear.training.recipes.diagevo_answers import DiagEvoMathClassifier
+    from gear.training.recipes.diagevo_data import DiagEvoChallengerDatasetBuilder
+
+    pool = store.read_json(curriculum_ref)
+    require(
+        pool.get("kind") == "diagevo-solver-curriculum"
+        and pool.get("schemaVersion") == 1
+        and pool["input"].get("generationRef") is not None,
+        "diagevo-generation-required",
+        "native solver recipe requires a curriculum bound to fresh challenger generation",
+    )
+    origin = store.read_json(pool["input"]["generationRef"])
+    challenger_request = store.read_json(challenger_request_ref)
+    require(
+        digest_json(challenger_request) == origin["requestDigest"],
+        "diagevo-challenger-request-drift",
+        "fresh question provenance must use the sealed challenger request",
+    )
+    generation = diagevo_generation.DiagEvoGenerationBuilder(
+        DiagEvoChallengerDatasetBuilder(
+            store, challenger_request, objective=native_component(origin["objective"])
+        ),
+        prompt=native_component(origin["prompt"]),
+    )
+    builder = DiagEvoSolverDatasetBuilder(
+        store, request, policy=native_component(pool["policy"]), generation_builder=generation
+    )
+    builder._pool(curriculum_ref)
+    require(
+        pool["classifier"].get("kind") == DiagEvoMathClassifier.stage_id
+        and isinstance(pool["classifier"].get("parameters"), dict),
+        "diagevo-classifier-drift",
+        "native solver recipe requires a mathematical classifier configuration",
+    )
+    classifier = DiagEvoMathClassifier(store, **pool["classifier"]["parameters"])
+    require(
+        classifier.identity() == pool["classifier"],
+        "diagevo-classifier-drift",
+        "native solver recipe requires the frozen Math-Verify classifier",
+    )
+    return builder, pool, classifier
 
 
 def _cause(row):

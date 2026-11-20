@@ -160,6 +160,19 @@ daemon 经当前 worker bearer/generation 通道发出短期 challenge，包含�
 
 远程观察分别返回 daemon 和 worker 的启动/当前 runtime，控制端只检查自身 runtime，不要求安装本地 Docker。Gear 要求 worker 的实际 Hitch payload/package 与控制端一致；worker 的 Node 版本可以不同，但会进入冻结身份。worker 使用无 Git checkout 的同内容安装包时，source 可为 `unavailable`，不能伪造源码 commit；如能观察到自身 Git checkout，则 commit 也必须匹配。以上仍是版本和环境观察，不构成远程 sandbox 或模型路由验收。
 
+## 创建与准入返回丢失后的恢复
+
+显式控制单个作业的调用方可为 `init` 和 `admit` 提供稳定的 `--idempotency-key`：
+
+```sh
+gear training init solver.json --idempotency-key round-0/solver --config CONTROLLER.json
+gear training admit EXP_ID --idempotency-key round-0/solver --config CONTROLLER.json
+```
+
+创建键在同一个 store 中固定实验身份，且必须对应相同的完整 spec；同键换配置会拒绝。准入键在实验内固定作业身份。操作已落盘但返回丢失时，重复原命令得到原实验或作业的当前状态，不增加训练提交、不重置 champion／预算，也不自动恢复暂停作业。更换准入键才表示申请新作业，仍须通过活动作业、预算和 checkpoint 检查。
+
+此选项仅用于 native `init`／`admit`。自动 iteration 的准入继续使用原有有序轮次意图，不接受另外的准入键；`run SPEC` 也不接受该选项。需要稳定创建身份时，先 `init`、`admit`，再对返回的 `EXP_ID RUN_ID` 使用现有 `run`。
+
 ## 外部评估端点绑定
 
 v1/v2 controller 的 `evaluationBindings` 指向按不可变 HF snapshot digest 索引的外部 ready 文件。完整映射、binding、可信部署回执和公共比较 digest 见[独立评测端点](standalone-inference.zh-CN.md)。需要先为 baseline 准备自己的版本绑定；新 candidate 导出后等待自己的绑定，不使用旧模型顶替。

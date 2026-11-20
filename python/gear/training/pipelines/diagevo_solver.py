@@ -9,7 +9,6 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
-from gear.core.base import construct_module
 from gear.training.data.trajectories import RawTrajectory
 from gear.training.loop import TrainingLoop
 from gear.training.pipelines import online_rl
@@ -21,17 +20,21 @@ from gear.training.recipes import (
     diagevo_solver,
 )
 from gear.training.recipes.agent_grpo import sampling_params
-from gear.training.recipes.diagevo import DiagEvoPolicy
 from gear.training.recipes.diagevo_answers import DiagEvoMathClassifier
 from gear.training.recipes.diagevo_backends import BGEEmbedding, CodexDiagnosis
 from gear.training.recipes.diagevo_challenger import DiagEvoChallengerReward
-from gear.training.recipes.diagevo_data import DiagEvoChallengerDatasetBuilder, _native_groups
-from gear.training.recipes.diagevo_generation import DiagEvoGenerationBuilder, DiagEvoQuestionPrompt
+from gear.training.recipes.diagevo_data import _native_groups
 from gear.training.recipes.diagevo_memory import DiagEvoDiagnostician
 from gear.training.recipes.diagevo_round import DiagEvoMemoryUpdater
-from gear.training.recipes.diagevo_solver import DiagEvoSolverDatasetBuilder
+from gear.training.recipes.diagevo_solver import (
+    DiagEvoSolverDatasetBuilder,
+    read_native_curriculum,
+)
+from gear.training.recipes.diagevo_solver import (
+    native_component as _component,
+)
 from gear.training.runtime.preflight import generation_template_kwargs
-from gear.training.storage.content import digest_file, digest_json, require
+from gear.training.storage.content import digest_file, require
 from gear.training.storage.loop_journal import _digest, _read
 
 
@@ -177,26 +180,6 @@ class SolverModelUpdater:
         )
 
 
-def _component(spec):
-    # Artifact entrypoints cannot import arbitrary code. Alternative components
-    # can be composed directly in a caller's own frozen script recipe.
-    allowed = {
-        cls.__module__ + ":" + cls.__qualname__: cls
-        for cls in (
-            DiagEvoPolicy,
-            DiagEvoChallengerReward,
-            DiagEvoQuestionPrompt,
-            DiagEvoDiagnostician,
-        )
-    }
-
-    def resolve(name):
-        require(name in allowed, "diagevo-component", "unsupported native DiagEvo component")
-        return allowed[name]
-
-    return construct_module(spec, resolve)
-
-
 def build_loop(config, runtime):
     """Reconstruct an admitted curriculum, including the native construction handoff."""
     require(
@@ -253,40 +236,8 @@ def build_loop(config, runtime):
         )
         parameters = {key: construction[key] for key in ("curriculumRef", "challengerRequestRef")}
     curriculum_ref = parameters["curriculumRef"]
-    pool = store.read_json(curriculum_ref)
-    require(
-        pool.get("kind") == "diagevo-solver-curriculum"
-        and pool.get("schemaVersion") == 1
-        and pool["input"].get("generationRef") is not None,
-        "diagevo-generation-required",
-        "native solver recipe requires a curriculum bound to fresh challenger generation",
-    )
-    origin = store.read_json(pool["input"]["generationRef"])
-    request = store.read_json(parameters["challengerRequestRef"])
-    require(
-        digest_json(request) == origin["requestDigest"],
-        "diagevo-challenger-request-drift",
-        "fresh question provenance must use the sealed challenger request",
-    )
-    generation = DiagEvoGenerationBuilder(
-        DiagEvoChallengerDatasetBuilder(store, request, objective=_component(origin["objective"])),
-        prompt=_component(origin["prompt"]),
-    )
-    builder = DiagEvoSolverDatasetBuilder(
-        store, runtime.request, policy=_component(pool["policy"]), generation_builder=generation
-    )
-    builder._pool(curriculum_ref)
-    require(
-        pool["classifier"].get("kind") == DiagEvoMathClassifier.stage_id
-        and isinstance(pool["classifier"].get("parameters"), dict),
-        "diagevo-classifier-drift",
-        "native solver recipe requires a mathematical classifier configuration",
-    )
-    classifier = DiagEvoMathClassifier(store, **pool["classifier"]["parameters"])
-    require(
-        classifier.identity() == pool["classifier"],
-        "diagevo-classifier-drift",
-        "native solver recipe requires the frozen Math-Verify classifier",
+    builder, pool, classifier = read_native_curriculum(
+        store, curriculum_ref, parameters["challengerRequestRef"], request=runtime.request
     )
     retained = {vote["question_id"] for vote in pool["votes"] if vote["retained"]}
     if construction is not None:
