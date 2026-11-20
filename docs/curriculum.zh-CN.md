@@ -4,6 +4,8 @@
 
 本分支基于 `dev` 的 Gear 0.2.4 基线；以下是新增 API，不是已发布的 0.2.4 API。完整研究和后续范围见[设计文档](failure-driven-data-operators-spec.zh-CN.md)。
 
+本版本不做 GPU 训练，主要验证固定模型权重下的数据生成、执行反馈和 harness 改进。下方 CPU 示例用于算子与数据合同验证；已有训练接口的 GPU 接入和效果验证列入后续范围，详见[实施台账](curriculum-implementation-status.zh-CN.md)。
+
 ## 运行最小闭环
 
 在仓库根目录运行，无须 Node、Hitch、GPU 或模型服务：
@@ -29,7 +31,7 @@ PYTHONPATH=python python3 examples/training-loop/failure_curriculum_cpu.py \
 
 [真实 LLM 示例](../examples/curriculum-harness/README.zh-CN.md)固定模型权重，使用官方 IFEval strict 验证器执行 failure → 新任务 → 回答与反馈 → developer prompt 候选 → 开发集采纳 → 固定测试集评测。fixed、random、failure 三组有相同的有效学习样本、候选和开发评测预算；生成和诊断成本另计。模型调用、收费请求恢复、验证执行和格式转换均由示例调用方处理，没有增加 adapters 或 curriculum 执行层。它是两轮反思式提示词搜索，不是完整 GEPA 复现。
 
-[实测结果与证据](../research/curriculum-harness-2026-11-19/README.zh-CN.md)：baseline 与 failure 都通过 46/48，fixed 与 random 都通过 45/48。局部练习从 6/8 到 8/8，但没有观察到相对初始 harness 的留出集提升；不能据此证明 failure 数据优于两种对照。
+[正式四组对照](../examples/curriculum-harness/FORMAL.zh-CN.md)进一步接入 `Project.refine`、`ReflectiveSearch`、隔离 worker、候选约束及恢复。[第五版结果与证据](../research/curriculum-harness-2026-11-20-v5/README.zh-CN.md)已完成：四组 × 三个优化种子 × 两轮，共 1,478 次真实调用、24/24 个有效候选；留出均值 fixed 95.83%、random 97.22%、failure 和 memory 均为 94.44%。没有观察到 failure 数据优势，且 failure 唯一被采纳的候选来自预设的随机回退轮次，不能归因为失败定向生成。该结果验证了固定权重的文本 harness 闭环，不证明完整论文配方或工具编排的效果。
 
 ## 算子与合同
 

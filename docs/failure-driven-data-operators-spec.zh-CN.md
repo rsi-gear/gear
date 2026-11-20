@@ -2,6 +2,8 @@
 
 状态：本分支已实现基础与扩展算子、四类生成合同、监督提案、可信数据构建和 CPU 调用方闭环，并接入正式 `ReflectiveSearch`；见[当前 API](curriculum.zh-CN.md)与[逐项验收台账](curriculum-implementation-status.zh-CN.md)。完整论文配方与效果实验按台账验收，不是 0.2.4 已发布 API。
 
+本版本范围（2026-11-20 更新）：**不做 GPU 训练。** 继续交付独立 curriculum 算子、无 GPU 的数据生成／验证配方、固定模型权重的 harness 改进和真实 LLM 对照。已有 CPU 更新、训练合同及 DiagEvo 编排保留其实际验证边界；GPU 权重更新、训练节点部署、跨节点训练制品准备、论文规模训练证据保留与 GPU 效果实验列为后续工作，不作为本版验收条件。下文的训练路线仍是完整设计，不能因本次范围调整将尚未实现的能力改标为完成。
+
 核验日期：2026-11-19。版本基线：本地 Git 标签 `v0.2.4`，commit `e4c3e8b1cd459c12ca0705ff46493e1e6096790c`。实现分支 `codex/curriculum-foundations` 从本地 `dev` commit `37aeed4714fb8efa4e88255c3ed87323f1d29e01` 创建，版本为 0.2.4；原工作区已有修改保持原状。
 
 ## 1. 开源核验与采用方式
@@ -283,6 +285,8 @@ pool、dataset、模型/adapter、harness、共享学习库分别版本化。一
 
 ## 11. 实施顺序与验收
 
+本版按不做 GPU 训练的范围验收。真实模型调用使用固定权重，改进对象是 harness；CPU 数值测试只证明相应数据合同和本地更新行为。SENTINEL／CoEvolve 的参考执行与探索、TRACE 的环境生成和校准、Agent-R 的轨迹修复等无 GPU 部分仍需逐项补齐；这些配方的 GPU 训练及效果归入后续范围。GPU controller 配置或训练资源不是本版的前置条件。
+
 **第一阶段：算子与输入输出。** 在 `gear.curriculum` 实现案例、失败记忆、练习计划、验证报告及对应算子。先提供简单的错题条件生成基线与随机生成基线，展示调用方自己的 TaskSource 如何组合算子并返回原任务格式。配置冻结、子调用恢复、生成任务封存和验证授权在该调用方实现中完成。
 
 **第二阶段：完整配方与 harness 外层循环。** 接入 Forge-inspired 四类变异、SENTINEL 参考执行构造，以及 CoEvolve 采样信号；每个 recipe 单独验收。生成任务进入新的已准入 run，固定外部评价任务。
@@ -291,7 +295,7 @@ pool、dataset、模型/adapter、harness、共享学习库分别版本化。一
 
 本分支已用单元与调用方集成检查覆盖案例去重、失败分类、引用与 family 约束、显式预算/随机源、验证绑定、语义近邻与难度测量、混合配额、轻量导入、Module 重建、CPU 更新及三个本地阶段的中断恢复。四类 `kind` 和 `BuildSupervision` 已导出；可信 builder 对修复的新捕获、偏好的实际输入与状态、合成问答的真实 tokenizer mask 分别检查。CPU 示例比较 fixed/random/failure 三种同任务预算策略。另有[真实 LLM harness 示例](../examples/curriculum-harness/README.zh-CN.md)，固定模型权重，只更新 developer prompt；正式版本以 `Project.refine` 对照 fixed/random/failure/memory，使用新 run 准入、约束修订和独立留出评价。具体运行是否完成、效果和限制以验收台账与对应报告为准，不代表完整论文复现或 GPU 训练效果。
 
-以下为分阶段验收清单，其中收费调用 reconcile、完整论文配方、真实环境/GPU 与泛化收益实验需在对应后续接入时完成：
+以下为完整设计的分阶段验收清单。本版继续核验无 GPU 路径的收费调用恢复、真实执行、隔离、对照与成本；涉及 GPU 权重训练和相应专用后端的条目保留为后续验收。实验完成要求报告真实结果，不要求 failure 必须胜过对照；负结果不能通过改写协议或筛选运行变成收益证据：
 
 1. 纯算子无 I/O；算子输入输出可校验、可序列化；搜索与训练调用方分别验证实际参数和提示词变化进入身份；TaskSource 返回原 executor 接受的任务格式。
 2. stage 内诊断后、生成后、验证后崩溃均可恢复；未知外部结果先 reconcile，不重复生成收费数据。

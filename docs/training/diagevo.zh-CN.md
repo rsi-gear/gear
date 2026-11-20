@@ -2,6 +2,8 @@
 
 `gear.training.recipes.diagevo.DiagEvoPolicy` 已实现 DiagEvo 的投票筛选、频率调度和状态更新规则，`gear.training.recipes.diagevo_memory.DiagEvoDiagnostician` 提供诊断、检索筛选及节点归并组件。challenger 与 solver 的四阶段入口已将奖励、已消费失败和轮末记忆绑定到原生提交。`diagevo_run.evolve` 与 `python -m gear.training diagevo` 进一步串联双模型交替作业、新题构造、记忆反馈、跨轮预算和暂停／恢复。实际 controller、Hitch 编译器及 native driver 的两轮链路已通过 CPU 集成；训练 actor、optimizer 状态、评测服务和本组诊断 SDK 消息仍为替身。独立的 Codex／BGE 记忆后端已有真实调用证据。真实 GPU 更新、双模型效果实验和论文规模验证仍未完成，也未在 `gear.algorithms` 中宣称完整论文复现。
 
+版本范围（2026-11-20 更新）：**本版本不做 GPU 训练。** 本文保留已有规则、调用入口及 CPU／真实推理证据，GPU 训练、节点部署、跨节点训练制品准备和论文规模证据保留列为后续工作。下方 `diagevo run` 是训练作业入口，不是本版固定权重的 harness 实验入口；本版真实 LLM 对照使用[正式 harness 示例](../../examples/curriculum-harness/FORMAL.zh-CN.md)，无需 GPU controller 配置。
+
 规则依据 [DiagEvo 第 2 节及附录 E](https://arxiv.org/html/2609.00768v2#S2)，默认构造样本数 12、优化组大小 8；绝对置信度区间为 [0.25, 0.75]，相对阈值 1.6，晋级阈值 0.7，探索系数 0.5。所有参数进入现有 `Module` 描述，可重建和替换，不在 `curriculum` 增加专用分支。
 
 ## 构造、筛选与优化样本
@@ -405,7 +407,7 @@ python -m unittest test_diagevo_text_harness test_diagevo_tasks test_diagevo_evo
 
 上一批 driver、GRPO、脚本及配方回归有 57 个通过，4 个因未设置 `GEAR_PINNED_SLIME_SOURCE` 跳过，不将这些跳过项计为已验收。
 
-多轮编排、跨轮预算和显式暂停／恢复已经接入；实际 controller、native driver 与 tiny HF／BERT 的两轮组合已验证。尚缺真实双模型 GPU 训练、效果对照、可靠美元成本、跨节点制品准备和论文规模证据保留。CPU 替身集成和独立真实推理／记忆后端验证不替代完整 DiagEvo 或 GPU 实验验收。
+多轮编排、跨轮预算和显式暂停／恢复已经接入；实际 controller、native driver 与 tiny HF／BERT 的两轮组合已验证。可靠美元成本尚未计量。真实双模型 GPU 训练、效果对照、跨节点制品准备和论文规模证据保留未完成，按本版范围列为后续工作，不要求当前提供节点配置或运行训练。CPU 替身集成和独立真实推理／记忆后端验证不替代完整 DiagEvo 或后续 GPU 实验验收。
 
 接入两模型更新时还有三个已核实的边界：
 
@@ -413,4 +415,4 @@ python -m unittest test_diagevo_text_harness test_diagevo_tasks test_diagevo_evo
 - 全失败优化组仍是诊断材料。[原生采样路径](../../python/gear/training/backends/slime/rollout.py)选择跳过／重抽时，只在返回的 raw groups 中保留训练准入组；完整调用方需要明确使用已支持的 `zeroVarianceGroup="keep"`，或另行保留并验证未准入组，不能因为没有梯度信号而丢掉失败证据。
 - [现有原生采样合同](../../python/gear/training/recipes/agent_grpo.py)只接受 `topP=1`，而论文报告为 0.99。完整配方必须扩展并验证对应行为分布合同，或预先声明使用 `topP=1` 的适配实验；不能将不支持的参数写进配置后视为已经实现。
 
-此外，模型节点当前制品引用图上限为 4096 个对象、16 MiB metadata。论文规模的一批 challenger 加每题 12 条 solver 捕获可能超过该上限；完整入口需要在更新前核验体量，并接入相应的分页或独立证据保留能力。当前小批 CPU 合同验证没有覆盖该规模，也不能据此声称论文默认批量可运行。
+此外，模型节点当前制品引用图上限为 4096 个对象、16 MiB metadata。论文规模的一批 challenger 加每题 12 条 solver 捕获可能超过该上限；后续训练版本需要在更新前核验体量，并接入相应的分页或独立证据保留能力。本版不推进该节点扩展。当前小批 CPU 合同验证没有覆盖该规模，也不能据此声称论文默认批量可运行。
