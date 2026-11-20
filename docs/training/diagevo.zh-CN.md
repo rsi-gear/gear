@@ -1,6 +1,6 @@
 # DiagEvo 课程规则的当前接入
 
-`gear.training.recipes.diagevo.DiagEvoPolicy` 已实现 DiagEvo 的投票筛选、频率调度和状态更新规则，`gear.training.recipes.diagevo_memory.DiagEvoDiagnostician` 提供诊断、检索筛选及节点归并组件。`gear.training.recipes.diagevo_round.DiagEvoMemoryUpdater` 已将这些组件串成一个可恢复的轮末记忆更新流程；`gear.training.recipes.diagevo_challenger.DiagEvoChallengerReward` 计算 challenger 的问题质量奖励。challenger 与 solver 的 dataset builder 已将奖励绑定到原生捕获及 GRPO 批次，solver 可从完整训练提交链恢复轮末诊断材料。两个单作业入口均已接入四阶段原生驱动：challenger 数据阶段执行冻结 HF solver 推理及 Math-Verify，最后提交后可独立生成新题、重新采样 solver 并封存完整筛选结果；后续已准入 solver 作业可消费该结果。训练 actor 的集成验证仍使用 CPU 替身。Codex 诊断、BGE embedding 和已提交失败材料的记忆更新已通过真实后端验证。完整双模型算法尚未注册，也未在 `gear.algorithms` 中宣称支持；自动创建／准入后续任务、记忆发布、多轮跨作业编排和 GPU 效果仍待接入验证。
+`gear.training.recipes.diagevo.DiagEvoPolicy` 已实现 DiagEvo 的投票筛选、频率调度和状态更新规则，`gear.training.recipes.diagevo_memory.DiagEvoDiagnostician` 提供诊断、检索筛选及节点归并组件。`gear.training.recipes.diagevo_round.DiagEvoMemoryUpdater` 已将这些组件串成一个可恢复的轮末记忆更新流程；`gear.training.recipes.diagevo_challenger.DiagEvoChallengerReward` 计算 challenger 的问题质量奖励。challenger 与 solver 的 dataset builder 已将奖励绑定到原生捕获及 GRPO 批次，solver 可从完整训练提交链恢复轮末诊断材料。两个单作业入口均已接入四阶段原生驱动：challenger 最后提交后可独立生成新题、重新采样 solver 并封存完整筛选结果；后续已准入 solver 作业可消费该结果，并在最后提交后执行记忆更新，将决定与回执关联到模型产物。训练 actor 的集成验证仍使用 CPU 替身。Codex 诊断、BGE embedding 和已提交失败材料的记忆更新已通过真实后端验证。完整双模型算法尚未注册，也未在 `gear.algorithms` 中宣称支持；自动创建／准入后续任务、多轮跨作业编排和 GPU 效果仍待接入验证。
 
 规则依据 [DiagEvo 第 2 节及附录 E](https://arxiv.org/html/2609.00768v2#S2)，默认构造样本数 12、优化组大小 8；绝对置信度区间为 [0.25, 0.75]，相对阈值 1.6，晋级阈值 0.7，探索系数 0.5。所有参数进入现有 `Module` 描述，可重建和替换，不在 `curriculum` 增加专用分支。
 
@@ -135,7 +135,7 @@ generationUsage 单列新题生成的本地调用数、输入／输出 tokens �
 | `no-retained-questions` | 全部候选与投票已保存，但没有题满足原筛选策略，不创建 solver 训练作业 |
 | `no-valid-questions` | 新题全部格式无效，不调用构造 solver，curriculum 引用为空 |
 
-这一步没有放宽置信度阈值或生成额外候选来保证成功，也不代替控制器的任务创建、环境／verifier 准备和准入。最终记忆发布及下一轮调度仍待外层串联。
+这一步没有放宽置信度阈值或生成额外候选来保证成功，也不代替控制器的任务创建、环境／verifier 准备和准入。下述 solver 入口可发布轮末记忆，下一轮调度仍待外层串联。
 
 ## 单个 solver 作业的原生执行
 
@@ -149,7 +149,28 @@ factory 从冻结描述重建 policy、challenger objective 和 question prompt�
 
 数据阶段先核对实际 ledger 中的关闭 lease、更新前 checkpoint、完整原生组和来源，再执行数学分类、封存 ±1 奖励批次并交给既有 updater。原 token、mask、行为 logprob 和 verifier 反馈不变。已完成阶段按现有 `TrainingLoop` 重放；批次封存后丢失返回时可从原捕获确定性重建，参数更新提交后丢失返回时复用原生提交，不重复采样或更新。数学计算是本地运算，中断后未完成的分类可以重算，不产生额外模型调用。
 
-这里完成的是一个已准入 solver 作业。完整外层仍须负责作业启动、保留题的任务创建／准入、轮末记忆制品发布和下一轮调度；下文的记忆调用函数尚未自动接入这个 factory。两作业交接测试使用真实 tiny HF 新题／构造推理，但原生训练 actor、优化器和提交仍为明确标注的替身，不能作为真实 GPU 更新或论文效果证据。
+这里完成的是一个已准入 solver 作业。完整外层仍须负责作业启动、保留题的任务创建／准入和下一轮调度。两作业交接测试使用真实 tiny HF 新题／构造推理，但原生训练 actor、优化器和提交仍为明确标注的替身，不能作为真实 GPU 更新或论文效果证据。
+
+## Solver 最后提交后的记忆发布
+
+上述两种 solver 配置都可增加 `memoryUpdate`。它要求 `diagnosis` 和 `embedding` 两组参数，可选 `diagnostician` 为 `DiagEvoDiagnostician.describe().to_dict()`；未指定时沿用默认诊断规则。
+
+| 字段 | 配置 |
+| --- | --- |
+| `diagnosis` | `CodexDiagnosis` 的 `model` 必填；可显式指定 `model_provider`、`effort`、`timeout_seconds`、`max_calls` |
+| `embedding` | `BGEEmbedding` 的 `model_ref` 必填；可指定 `max_tokens`、`max_calls` |
+
+根目录由现有作业目录确定，配置不能覆盖后端存储路径。模型节点须预先具备 `agents`、数学和 CPU 推理依赖、诊断服务凭据，以及 BGE 引用及其文件；当前输入传输不自动遍历这些 scriptConfig 引用，也不传输凭据。未启用该选项的作业继续使用原 `SlimeModelUpdater`。
+
+启用后使用 `SolverModelUpdater` 包装原 updater。中间更新保持原流程，只有最后一次提交才读取实际 SQLite ledger 的全部 commit，并与运行时提交链及返回 checkpoint 对照。随后以更新后的 checkpoint 构造记忆上下文，通过 `update_committed_memory` 重建全部已消费失败、原构造参考及轮初记忆，执行诊断、检索和归并。
+
+最终 checkpoint 增加 `memoryRef`，现有 `provenanceRef → trainingLoopRef → checkpoint.memoryRef` 关联完整 `diagevo-committed-memory` 制品，不新增发布协议。制品中的 `memory.memory` 和 `memory.nodes` 是供下一轮调度消费的状态，`callReceipts` 保留诊断／embedding 输入输出及原生身份；用量明确区分已知 tokens、缺失 usage 和本地 embedding 用量，美元费用仍未知。关联记忆不代表模型已经通过效果选型或已激活部署。
+
+原生训练提交丢失返回后，可在不启动 CUDA 的路径完成记忆；诊断回执丢失时读取原 turn，结果不明则停止，不重发。记忆结果已保存而最终返回丢失时，从原决定和回执重建，不连接 SDK 或加载 BGE。完整四阶段结果重放也经现有 `on_progress` 回调核对记忆与全部原生回执，缺失或变化会拒绝继续发布。
+
+取消在记忆步骤和每个外部调用前后检查，已完成调用先保存结果；当前调用仍受后端软期限约束，不提供立即中断远端 turn 的保证。取消保留训练提交和已保存回执，恢复后继续未完成记忆。下轮任务创建、频率抽样及双模型作业调度仍由尚未完成的外层负责。
+
+首次执行的记忆步骤仍位于原 native 作业内，训练资源由 driver 在作业退出时释放，不能把诊断耗时视为已经释放 GPU 后的免费时间。全部训练已提交的恢复路径无需重新启动 native actor。
 
 ## 调度与状态
 
@@ -207,7 +228,7 @@ factory 从冻结描述重建 policy、challenger objective 和 question prompt�
 
 普通调用函数 `gear.training.recipes.diagevo_committed_memory.update_committed_memory(...)` 接收 post-update `TrainingContext`、绑定新题池来源的 solver builder、全部 commit refs、curriculum ref 和这两个后端实例。它重建已消费批次的失败材料，要求 context 对应最后一个提交的 checkpoint／HF 导出，再执行并验证记忆更新。每份实际回执必须匹配记忆调用的输入和输出，诊断 turn 不可重复计数；输出为包含完整回执引用、已知 token 汇总和未知用量列表的 CAS 制品。
 
-这仍是训练调用方中的函数，没有增加 curriculum adapter 或通用执行协议。外层调用方仍须认证 native ledger／提交来源，传输引用依赖并发布返回的记忆制品；它尚未与 solver factory 的最终制品发布或下一轮作业创建自动串联。
+这仍是训练调用方中的函数，没有增加 curriculum adapter 或通用执行协议。solver factory 的 `memoryUpdate` 已负责本作业 native ledger 校验及最终模型产物中的记忆关联。独立调用该函数时，调用方仍须认证提交来源并处理引用传输；下一轮作业创建尚未自动串联。
 
 [真实后端记录](../../research/diagevo-memory-2026-11-20/README.zh-CN.md)使用 `gpt-6-astra` 与固定 revision 的 `BAAI/bge-small-en-v1.5`：第二版执行 5 个诊断 turn、4 次 embedding，在回执保存前注入中断后读取原 turn 完成恢复，断开诊断 client 后重放得到相同制品。第一版因 JSON 字段顺序导致恢复校验中止，其 1 个 turn 单独保留；两版合计 64,526 原生 tokens。BGE small 是本次实现选择，不宣称等于论文配置；solver 响应、actor 状态和提交为明确标识的 CPU fixture，训练步数为零，不能据此声称训练闭环或效果提升。
 
@@ -239,11 +260,13 @@ factory 从冻结描述重建 policy、challenger objective 和 question prompt�
 
 `python/tests/test_diagevo_construction_pipeline.py` 使用真实 tiny HF 和数学分类检查独立构造捕获、完整筛除记录、空题池、配额耗尽后的重放、结果返回丢失恢复，以及模型／采样／范围漂移拒绝。两个不同作业目录共享模型节点 CAS，前一作业的课程被后一 solver 作业实际消费，并可恢复其已提交失败材料。就绪路径显式将夹具策略 `p_high` 设为 1，以接纳恒定输出 boxed 2 的小模型；这只验证交接，不代表默认难度窗口有效。第二作业请求和 native actor 是测试替身，没有验证控制器自动创建／准入任务或真实梯度更新。
 
-当前十五组共 122 个 DiagEvo 测试通过。最小依赖环境运行同一集合，37 个通过、85 个因缺少可选依赖跳过。依赖边界检查、Ruff 和上述 78 文件类型检查通过。
+`python/tests/test_diagevo_memory_pipeline.py` 将 solver 实际消费的提交、数学失败材料、真实 tiny BERT 和 SDK 类型化消息替身接到模型 provenance。覆盖两次提交仅在末次更新记忆、提交／诊断回执／最终返回丢失、完整阶段重放时的回执缺失、ledger 漂移、调用后的取消、未知 turn 停止重发和缺失 usage 保留；另串联新题构造、第二 solver 作业及最终记忆。SDK 响应、原生 actor、优化器和任务请求仍为明确替身，本组没有收费模型调用，也没有真实梯度或效果证据。
+
+当前十六组共 132 个 DiagEvo 测试通过。最小依赖环境运行同一集合，37 个通过、95 个因缺少可选依赖跳过。依赖边界检查、Ruff 和上述 78 文件类型检查通过。
 
 上一批 driver、GRPO、脚本及配方回归有 57 个通过，4 个因未设置 `GEAR_PINNED_SLIME_SOURCE` 跳过，不将这些跳过项计为已验收。
 
-尚缺保留题的自动创建／准入、记忆制品的外层发布、完整多轮调度与跨作业恢复，以及双模型真实训练和效果对照。美元成本也尚无可靠来源。两个作业之间的数据交接和真实推理／记忆后端验证不替代完整 DiagEvo 或 GPU 实验验收。
+尚缺保留题的自动创建／准入、记忆用于下一轮的完整调度与跨作业恢复，以及双模型真实训练和效果对照。美元成本也尚无可靠来源。两个作业之间的数据交接、轮末记忆发布和真实推理／记忆后端验证不替代完整 DiagEvo 或 GPU 实验验收。
 
 接入两模型更新时还有三个已核实的边界：
 

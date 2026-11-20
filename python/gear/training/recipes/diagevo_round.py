@@ -121,6 +121,7 @@ class DiagEvoMemoryUpdater:
         diagnostician: DiagEvoDiagnostician | None = None,
         max_diagnoses: int = 256,
         max_embeddings: int = 256,
+        check_cancel: Callable[[], None] | None = None,
     ) -> None:
         if (
             not diagnosis_identity
@@ -138,6 +139,7 @@ class DiagEvoMemoryUpdater:
         self.policy = policy or DiagEvoPolicy()
         self.diagnostician = diagnostician or DiagEvoDiagnostician()
         self.max_diagnoses, self.max_embeddings = max_diagnoses, max_embeddings
+        self.check_cancel = check_cancel or (lambda: None)
 
     @staticmethod
     def _inputs(
@@ -215,6 +217,7 @@ class DiagEvoMemoryUpdater:
         nodes: Sequence[SkillNode],
     ) -> dict[str, JSON]:
         # Snapshot ordinary caller inputs before yielding to external models.
+        self.check_cancel()
         evidence, memory, nodes = copy.deepcopy((evidence, tuple(memory), tuple(nodes)))
         policy, diagnostician = clone(self.policy), clone(self.diagnostician)
         promoted = self._inputs(evidence, memory, nodes, policy)
@@ -269,6 +272,7 @@ class DiagEvoMemoryUpdater:
         budgets = cast(dict[str, int], identity["budgets"])
 
         async def external(kind: str, label: str, payload: JSON) -> tuple[JSON, str]:
+            self.check_cancel()
             body = {"round_digest": round_digest, "kind": kind, "label": label, "input": payload}
             key = digest(body).removeprefix("sha256:")
             intent = {"key": key, **body}
@@ -297,6 +301,7 @@ class DiagEvoMemoryUpdater:
                     }
                     _freeze(directory / "result.json", saved)
                     calls[key] = digest(saved)
+                    self.check_cancel()
                     return output, "diagevo-call/" + key
                 if recovered != {"state": "not_submitted"}:
                     raise RuntimeError(
@@ -324,6 +329,7 @@ class DiagEvoMemoryUpdater:
             }
             _freeze(directory / "result.json", saved)
             calls[key] = digest(saved)
+            self.check_cancel()
             return output, "diagevo-call/" + key
 
         async def diagnose(label: str, request: ModelInput) -> tuple[JSON, str]:
@@ -489,6 +495,7 @@ class DiagEvoMemoryUpdater:
                 "merge_candidates": candidates,
             }
         )
+        self.check_cancel()
         _freeze(
             root / "result.json",
             {

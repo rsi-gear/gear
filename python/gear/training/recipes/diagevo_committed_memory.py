@@ -17,7 +17,15 @@ from gear.training.storage.loop_journal import _read
 
 
 async def update_committed_memory(
-    ctx, builder, *, commit_refs, curriculum_ref, diagnosis, embedding, diagnostician=None
+    ctx,
+    builder,
+    *,
+    commit_refs,
+    curriculum_ref,
+    diagnosis,
+    embedding,
+    diagnostician=None,
+    check_cancel=None,
 ):
     """Use a post-update context and concrete CodexDiagnosis/BGEEmbedding instances."""
     store = builder.store
@@ -60,6 +68,7 @@ async def update_committed_memory(
         diagnostician=diagnostician,
         max_diagnoses=diagnosis.max_calls,
         max_embeddings=embedding.max_calls,
+        check_cancel=check_cancel,
     )
     output = await updater.update(
         ctx,
@@ -69,12 +78,26 @@ async def update_committed_memory(
     )
     result = updater.verify(ctx.workspace, operation_id=ctx.operation_id)
     require(result == output, "diagevo-memory-result", "memory verification differs from output")
+    return _seal_result(
+        store,
+        ctx.workspace,
+        operation_id=ctx.operation_id,
+        binding=binding,
+        checkpoint_ref=commit["checkpointRef"],
+        diagnosis=diagnosis,
+        embedding=embedding,
+    )
+
+
+def _seal_result(store, workspace, *, operation_id, binding, checkpoint_ref, diagnosis, embedding):
+    """Rebuild the portable result from saved decisions and exact backend receipts."""
+    output = DiagEvoMemoryUpdater.verify(workspace, operation_id=operation_id)
     receipts, native_ids = [], set()
     tokens = dict(
         inputTokens=0, outputTokens=0, cachedInputTokens=0, reasoningOutputTokens=0, totalTokens=0
     )
     unknown_usage, embedding_tokens, embedding_seconds = [], 0, 0.0
-    root = Path(ctx.workspace) / "diagevo-memory"
+    root = Path(workspace) / "diagevo-memory"
     saved_result = _read(root / "result.json")
     for key in sorted(saved_result["calls"]):
         intent = _read(root / "calls" / key / "intent.json")
@@ -132,7 +155,7 @@ async def update_committed_memory(
         "schemaVersion": 1,
         "kind": "diagevo-committed-memory",
         "input": binding,
-        "checkpointRef": commit["checkpointRef"],
+        "checkpointRef": checkpoint_ref,
         "memory": output,
         "callReceipts": receipts,
         "usage": {
