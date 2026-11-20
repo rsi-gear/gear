@@ -160,6 +160,8 @@ async def respond(message, *, calls_factory=TextCalls):
         or not 1 <= config["max_steps"] <= 64
     ):
         raise ValueError("retail provider requires bounded steps and a positive model-call quota")
+    if type(config.get("final_reply_on_limit", False)) is not bool:
+        raise ValueError("final_reply_on_limit must be an explicit boolean")
     identity = provider_identity(config, calls_factory)
     action = message["action"]
     if action == "describe":
@@ -258,7 +260,9 @@ async def respond(message, *, calls_factory=TextCalls):
                         scoped = SimpleNamespace(
                             call=scoped_call,
                             root=calls.root,
-                            max_calls=2 * config["max_steps"] + 1,
+                            max_calls=2 * config["max_steps"]
+                            + 1
+                            + int(config.get("final_reply_on_limit", False)),
                             identity=getattr(calls, "identity", "TextCalls"),
                             timeout_seconds=getattr(calls, "timeout_seconds", None),
                         )
@@ -344,6 +348,11 @@ async def respond(message, *, calls_factory=TextCalls):
                             max_calls=scoped.max_calls,
                             sample_id=job["key"],
                             attempt=0,
+                            **(
+                                {"final_reply_on_limit": config["final_reply_on_limit"]}
+                                if "final_reply_on_limit" in config
+                                else {}
+                            ),
                         )
                         result = await RetailCollector(
                             sample_root, config["tau2_source"], sample_config, scoped

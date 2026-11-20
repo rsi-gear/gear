@@ -76,6 +76,24 @@ ACTION_SCHEMA = object_schema(
         }
     }
 )
+FINAL_REPLY_SCHEMA = object_schema(
+    {
+        "action": object_schema(
+            {
+                "kind": {"type": "string", "const": "finish"},
+                "name": {"type": "string", "const": ""},
+                "arguments_json": {"type": "string", "const": "{}"},
+                "text": TEXT,
+            }
+        )
+    }
+)
+FINAL_REPLY_PROMPT = (
+    "The configured action budget is exhausted. No further tools or customer questions "
+    "are available. Give one truthful final reply based only on the recorded conversation "
+    "and tool results. Clearly distinguish completed changes from unresolved requests. "
+    "A final reply does not mean the task succeeded. Do not invent actions or outcomes."
+)
 WRITER_PROMPT = (
     "Write a new retail user request AFTER studying the executed reference. Preserve its "
     "customer, goal, item attributes and constraints. Exercise the selected learning "
@@ -335,9 +353,20 @@ def checked_history(history, *, scope, diagnoser_id):
 
 
 async def retail_dialogue(
-    session, model_json, checkpoint, *, opening, goal, harness, max_steps, role
+    session,
+    model_json,
+    checkpoint,
+    *,
+    opening,
+    goal,
+    harness,
+    max_steps,
+    role,
+    final_reply_on_limit=False,
 ):
     """Concrete retail loop shared by exploration and fixed-weight solver collection."""
+    if type(final_reply_on_limit) is not bool:
+        raise ValueError("final_reply_on_limit must be an explicit boolean")
     trace = {
         "schema_version": 1,
         "environment_id": session.identity,
@@ -349,16 +378,18 @@ async def retail_dialogue(
         "final": session.snapshot(),
     }
     conversation = [{"role": "user", "content": opening}]
-    for index in range(max_steps):
+    for index in range(max_steps + int(final_reply_on_limit)):
+        closing = index == max_steps
         response = await model_json(
             f"{role}/{index}",
             ModelInput(
-                harness,
-                ACTION_SCHEMA,
+                harness + "\n\n" + FINAL_REPLY_PROMPT if closing else harness,
+                FINAL_REPLY_SCHEMA if closing else ACTION_SCHEMA,
                 {
                     "policy": session.environment.policy,
-                    "tools": session.tool_schemas(),
+                    "tools": [] if closing else session.tool_schemas(),
                     "conversation": conversation,
+                    **({"action_budget_exhausted": True} if closing else {}),
                 },
             ),
         )
@@ -457,7 +488,14 @@ class RetailGenerator:
             "max_cases",
         }
         if (
-            set(config) - {"history", "conditioning", "random_targets", "use_failure_memory"}
+            set(config)
+            - {
+                "history",
+                "conditioning",
+                "random_targets",
+                "use_failure_memory",
+                "final_reply_on_limit",
+            }
             != expected
             or type(config["schema_version"]) is not int
             or config["schema_version"] != 1
@@ -481,6 +519,8 @@ class RetailGenerator:
         conditioning = config.get("conditioning", "failure")
         if type(config.get("use_failure_memory", False)) is not bool:
             raise ValueError("use_failure_memory must be an explicit boolean")
+        if type(config.get("final_reply_on_limit", False)) is not bool:
+            raise ValueError("final_reply_on_limit must be an explicit boolean")
         if conditioning not in ("failure", "random"):
             raise ValueError("generation conditioning must be failure or random")
         if conditioning == "random":
@@ -695,6 +735,7 @@ class RetailGenerator:
             harness=EXPLORER_PROMPT,
             max_steps=self.config["max_steps"],
             role="explore",
+            final_reply_on_limit=self.config.get("final_reply_on_limit", False),
         )
         self.checkpoint("reference", trace)
         try:

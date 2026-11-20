@@ -54,7 +54,7 @@ def validate_config(config):
         "max_repairs",
     }
     if (
-        set(config) != required
+        set(config) - {"generator_model", "final_reply_on_limit"} != required
         or type(config["schema_version"]) is not int
         or config["schema_version"] != 1
     ):
@@ -64,6 +64,13 @@ def validate_config(config):
         for key in ("harness", "model", "meta_model", "effort")
     ):
         raise ValueError("retail study requires explicit nonempty model and harness settings")
+    if type(config.get("final_reply_on_limit", False)) is not bool:
+        raise ValueError("final_reply_on_limit must be an explicit boolean")
+    if (
+        not isinstance(config.get("generator_model", config["model"]), str)
+        or not config.get("generator_model", config["model"]).strip()
+    ):
+        raise ValueError("generator_model must be a nonempty model name")
     bounds = {
         "rounds": 8,
         "max_steps": 64,
@@ -200,6 +207,11 @@ class RetailStudy:
                 )
             },
             "max_calls": c["calls_per_search"],
+            **(
+                {"final_reply_on_limit": c["final_reply_on_limit"]}
+                if "final_reply_on_limit" in c
+                else {}
+            ),
         }
 
     async def collect(self, seed, round_index, bundle, harness):
@@ -225,6 +237,11 @@ class RetailStudy:
             "max_calls": c["calls_per_task"],
             "sample_id": key,
             "attempt": 0,
+            **(
+                {"final_reply_on_limit": c["final_reply_on_limit"]}
+                if "final_reply_on_limit" in c
+                else {}
+            ),
         }
         async with self.calls_factory(
             root / "calls", max_calls=c["calls_per_task"], concurrency=1
@@ -242,7 +259,13 @@ class RetailStudy:
             "schema_version": 1,
             "partition": "train",
             **{key: c["training"][key] for key in ("family", "database", "user_id")},
-            **{key: c[key] for key in ("model", "effort", "max_steps")},
+            **{key: c[key] for key in ("effort", "max_steps")},
+            "model": c.get("generator_model", c["model"]),
+            **(
+                {"final_reply_on_limit": c["final_reply_on_limit"]}
+                if "final_reply_on_limit" in c
+                else {}
+            ),
             "max_calls": c["calls_per_generation"],
             "max_cases": 128,
             "seed": seed,

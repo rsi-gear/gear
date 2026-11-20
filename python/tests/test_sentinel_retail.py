@@ -461,6 +461,21 @@ class NativeRetailTests(unittest.TestCase):
                 if steps == 4:
                     self.assertNotIn("rewrite", calls.submissions)
 
+    def test_budget_final_reply_can_complete_an_executed_reference(self):
+        with tempfile.TemporaryDirectory() as root:
+            calls = FixtureCalls()
+            _, result = self.generate(
+                root, calls, self.config(max_steps=4, final_reply_on_limit=True)
+            )
+            self.assertEqual(result["status"], "ready")
+            trace = json.loads((Path(root) / "reference.json").read_text())
+            self.assertEqual(len(trace["steps"]), 5)
+            self.assertEqual(trace["steps"][-1]["kind"], "finish")
+            self.assertIn("explore/4", calls.submissions)
+            self.assertIn("rewrite", calls.submissions)
+            self.assertEqual(trace["final"]["orders"]["#G100"]["status"], "cancelled")
+            self.assertFalse(result["training_eligible"])
+
     def test_read_observation_drift_is_rejected_even_when_terminal_state_matches(self):
         with tempfile.TemporaryDirectory() as root:
             _, result = self.generate(root)

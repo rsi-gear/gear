@@ -35,6 +35,7 @@ git clone --depth 1 --branch v1.0.1 https://github.com/sierra-research/tau2-benc
 | `observations` | `{record, tool_calls}` 数组；record 为 `OutcomeRecord` JSON，tool_calls 为真实 `{name, arguments}` 序列 |
 | `model`, `effort`, `seed` | 固定模型与推理设置、显式抽样随机源 |
 | `max_steps`, `max_calls`, `max_cases` | 工具／对话步数上限 1–64；逻辑 SDK 调用配额 1–256；案例抽样上限 2–128 |
+| `final_reply_on_limit`（可选） | 默认 `false`；`true` 时在动作预算用尽后，额外请求至多一条真实最终回复，不再允许工具调用或客户提问 |
 | `history`（可选） | 上一轮 `memory.json` 的完整内容：`schema_version`、`scope`、`observations`、`memory` |
 | `use_failure_memory`（可选） | 默认为 `false`；显式设为 `true` 时，没有新诊断案例也可从已有 active memory 生成，不自动重新诊断 |
 
@@ -57,6 +58,8 @@ PYTHONPATH=python /tmp/gear-sentinel-env/bin/python \
 ## 实际 solver 采集
 
 [sentinel_collect.py](sentinel_collect.py) 与参考探索共用实际工具对话循环。输入是 `schema_version=1`、显式 `partition`（`train`／`validation`／`test`）、`family`、`database`、`user_id`、native `task`、已执行 `reference`，以及 `model`、`effort`、`harness`、`max_steps`、`max_calls`、`sample_id`、`attempt`。每次采集先重新执行参考和两个负例，核对 task 的 gold actions，拒绝隐式初始状态、额外断言、persona 或用户工具。输出保留原分区，validation／test 观测不能进入训练生成器。
+
+采集也接受 `final_reply_on_limit`。默认预算截止仍是未完成轨迹；显式开启后，动作结束阶段有一次单独记录、只允许非空 `finish` 的真实模型调用。只有实际回复通过校验并写入轨迹，才进入正常评分；回复可以承认任务未完成，成功与否仍由实际数据库和政策检查决定。结束请求超时、未知或无效时不补造回复或分数。这一设置属于冻结的 solver policy；不得改写旧轨迹或在看到最终测试后启用。启用时 collector 最坏需要 `2 * max_steps + 2` 次调用（包含用户模拟与政策审核），总配额仍由调用方预先配置。
 
 ```sh
 PYTHONPATH=python /tmp/gear-sentinel-env/bin/python \
@@ -98,6 +101,7 @@ solver 只看到 policy、工具定义、实际对话；用户模拟器只看到
 | `validation`, `test` | 各自非空的固定任务数组；每项含 `partition`、`family`、`database`、`user_id`、`task`、`reference`、调用方授权的 `evidence_refs` |
 | `harness`, `model`, `meta_model`, `effort` | 初始完整提示、固定 solver 和 Meta 模型、推理设置 |
 | `max_steps`, `max_calls` | 每次任务执行的步数上限 1–64；本次搜索共享的正整数逻辑模型调用预算 |
+| `final_reply_on_limit`（可选） | 向 native retail collector 传递同一个结束协议；不改变 TRACE 环境的终止语义 |
 | `max_characters`, `target_characters`, `max_repairs` | 硬字符上限、较小的写作目标、有限修订次数；由现有 `PromptConstraints`／`ReflectiveSearch` 校验 |
 
 在本仓库先安装 npm 依赖并完成 `npm run build`，使用当前 Python 源码和同一虚拟环境运行：
@@ -170,7 +174,9 @@ PYTHONPATH=python /tmp/gear-sentinel-env/bin/python \
 | `validation`, `test` | 与正式搜索相同的固定独立任务数组；启动前对所有原始任务校准并检查隔离 |
 | `seeds`, `rounds` | 不重复的显式抽样 seed、1–8 轮；seed 控制任务抽样和组别顺序，不控制模型采样 |
 | `harness`, `model`, `meta_model`, `effort` | 初始提示、solver／生成模型、正式搜索 Meta 模型、推理设置 |
+| `generator_model`（可选） | 默认等于 `model`；可单独指定固定权重的生成模型，对 random/failure 的诊断、探索、用户模拟、写作和审核使用相同模型；源采集、正式 target 与最终评测仍使用 `model` |
 | `max_steps`, `calls_per_task`, `calls_per_generation`, `calls_per_search` | 每次执行步数，每个采集／评测任务、每次生成、每轮正式搜索的逻辑调用配额；不宣称 token／美元硬上限 |
+| `final_reply_on_limit`（可选） | 默认 `false`；同一设置用于所有组的源采集、生成、搜索与最终评测，结束调用计入对应既有配额 |
 | `fixed_count`, `generated_count`, `generation_attempts` | 固定份额、生成份额、每组每轮预先限定的生成尝试数；fixed 原始池至少满足两份额之和 |
 | `random_targets` | 不依赖失败观测的已授权训练领域目标列表 |
 | `max_characters`, `target_characters`, `max_repairs` | 与正式搜索相同的候选约束 |
@@ -189,6 +195,8 @@ PYTHONPATH=python /tmp/gear-sentinel-env/bin/python \
 所有 seed／组／轮完成选型后，先封存 `test-admission.json`，再评测相同的固定 test；validation／test 不进入生成或 Meta。相同 seed 内完全相同的 harness 共用同一份采集／测试观测，避免重复收费及引入无意义的模型随机差异。配置、源码、编译 CLI、原生后端、provider、任务和最终选型均绑定摘要；恢复重新检查原记录并复用调用键。汇总计数来自唯一原生回执，不累加复用观测；配额上限与实际消耗分别报告。结果只给出描述性逐 seed 配对差值，不声称统计显著性。
 
 新增 5 项检查覆盖随机组无失败输入、实际 native 校准与离线重放、未完成观测的指标、三组正式运行及恢复、全拒绝后的缺额和不可比较状态。测试中真实执行 Gear CLI／worker、Tau2 工具与 DB 评分；模型仍为明确替身，不构成真实提升证据。
+
+显式结束协议与独立生成模型设置另经 35 项检查验证：结束回复有真实回执才进入评分，数据库分别决定成功／失败，未知结束请求没有评分；默认截止行为保持 unknown。三组实际 CLI／worker 集成验证生成模型设置不会改变 solver，结束调用进入对应预算。以上模型均为替身，真实模型兼容性和效果须单独记录。
 
 ```sh
 GEAR_TEST_SENTINEL_RUNTIME=1 \

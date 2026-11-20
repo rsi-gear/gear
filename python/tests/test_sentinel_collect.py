@@ -20,6 +20,7 @@ from sentinel_collect import RetailCollector  # noqa: E402
 from sentinel_generate import (  # noqa: E402
     ACTION_SCHEMA,
     EXPLORER_PROMPT,
+    FINAL_REPLY_SCHEMA,
     RetailGenerator,
     controller_cases,
 )
@@ -224,6 +225,56 @@ class SolverCollectionTests(unittest.TestCase):
             )
             self.assertEqual(cases, ())
             self.assertFalse((Path(root) / "partial/model/policy-audit.json").exists())
+
+    def test_opt_in_final_reply_is_observed_and_database_still_decides_success(self):
+        for limit, passed in ((3, False), (4, True)):
+            with self.subTest(limit=limit), tempfile.TemporaryDirectory() as root:
+                steps = self.reference["steps"][:limit] + [
+                    {
+                        "kind": "finish",
+                        "text": "The cancellation is complete."
+                        if passed
+                        else "I have not cancelled your order; the request remains unresolved.",
+                    }
+                ]
+                calls = SolverCalls(steps)
+                collector, result = self.collect(
+                    root, calls, max_steps=limit, final_reply_on_limit=True
+                )
+                record = result["observation"]["record"]
+                self.assertTrue(record["complete"])
+                self.assertEqual(record["passed"], passed)
+                trace = json.loads((Path(root) / "trajectory.json").read_text())
+                self.assertEqual(len(trace["steps"]), limit + 1)
+                self.assertEqual(trace["steps"][-1], steps[-1])
+                request, _ = calls.receipts[f"solve/{limit}"]
+                data = json.loads(request[0])
+                self.assertTrue(data["action_budget_exhausted"])
+                self.assertEqual(data["tools"], [])
+                self.assertEqual(request[2]["output_schema"], FINAL_REPLY_SCHEMA)
+                self.assertEqual(result["model_usage"]["completed_calls"], limit + 3)
+                submitted = list(calls.submissions)
+                (Path(root) / "result.json").unlink()
+                self.assertEqual(result, asyncio.run(collector.collect()))
+                self.assertEqual(calls.submissions, submitted)
+                with self.assertRaises(ValueError):
+                    RetailCollector(root, TAU_SOURCE, self.config(max_steps=limit), calls)
+
+    def test_unknown_final_reply_never_creates_a_completed_task_or_grade(self):
+        class UnknownFinal(SolverCalls):
+            async def call(self, key, *args, **kwargs):
+                if key == "solve/3":
+                    raise RuntimeError("unknown native final reply")
+                return await super().call(key, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as root:
+            calls = UnknownFinal(self.reference["steps"])
+            with self.assertRaisesRegex(RuntimeError, "unknown native final reply"):
+                self.collect(root, calls, max_steps=3, final_reply_on_limit=True)
+            self.assertTrue((Path(root) / "steps/2.json").exists())
+            for name in ("steps/3.json", "grading.json", "result.json"):
+                self.assertFalse((Path(root) / name).exists())
+            self.assertNotIn("policy-audit", calls.submissions)
 
     def test_native_error_can_be_preserved_and_recovered(self):
         steps = copy.deepcopy(self.reference["steps"])

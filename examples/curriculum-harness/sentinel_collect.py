@@ -69,7 +69,7 @@ class RetailCollector:
             "attempt",
         }
         if (
-            set(config) != expected
+            set(config) - {"final_reply_on_limit"} != expected
             or type(config["schema_version"]) is not int
             or config["schema_version"] != 1
             or config["partition"] not in ("train", "validation", "test")
@@ -80,6 +80,8 @@ class RetailCollector:
                 raise ValueError("nonempty solver setting required: " + key)
         if type(config["attempt"]) is not int or config["attempt"] < 0:
             raise ValueError("attempt must be a nonnegative integer")
+        if type(config.get("final_reply_on_limit", False)) is not bool:
+            raise ValueError("final_reply_on_limit must be an explicit boolean")
         if (
             any(
                 type(config[key]) is not int or not 1 <= config[key] <= bound
@@ -110,6 +112,7 @@ class RetailCollector:
                 "harness": config["harness"],
                 "max_steps": config["max_steps"],
                 "max_calls": config["max_calls"],
+                "final_reply_on_limit": config.get("final_reply_on_limit", False),
                 "action_schema": ACTION_SCHEMA,
                 "user_prompt": USER_PROMPT,
                 "policy_audit": POLICY_AUDIT_PROMPT,
@@ -167,6 +170,7 @@ class RetailCollector:
             harness=config["harness"],
             max_steps=config["max_steps"],
             role="solve",
+            final_reply_on_limit=config.get("final_reply_on_limit", False),
         )
         self.checkpoint("trajectory", trace)
         _, _, issues = replay_trace(

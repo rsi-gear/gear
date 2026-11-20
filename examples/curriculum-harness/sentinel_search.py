@@ -55,7 +55,7 @@ async def _search(root, source_root, config, provider_script, preflight):
         "max_repairs",
     }
     if (
-        set(config) not in (expected, expected | {"agentr_workspaces"})
+        set(config) - {"agentr_workspaces", "final_reply_on_limit"} != expected
         or type(config["schema_version"]) is not int
         or config["schema_version"] != 1
     ):
@@ -65,6 +65,8 @@ async def _search(root, source_root, config, provider_script, preflight):
         for key in ("harness", "model", "meta_model", "effort")
     ):
         raise ValueError("retail search model and harness settings must be nonempty")
+    if type(config.get("final_reply_on_limit", False)) is not bool:
+        raise ValueError("final_reply_on_limit must be an explicit boolean")
     if (
         type(config["max_steps"]) is not int
         or not 1 <= config["max_steps"] <= 64
@@ -266,6 +268,11 @@ async def _search(root, source_root, config, provider_script, preflight):
                 "effort": config["effort"],
                 "tau2_source": str(Path(source_root).resolve()),
                 "trace_tasks": trace_tasks,
+                **(
+                    {"final_reply_on_limit": config["final_reply_on_limit"]}
+                    if "final_reply_on_limit" in config
+                    else {}
+                ),
                 **(
                     {"agentr_context": agentr_context}
                     if role == "meta" and agentr_context is not None

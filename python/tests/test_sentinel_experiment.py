@@ -204,6 +204,35 @@ class StudyRuntimeTests(RetailSearchFixture):
                 self.assertEqual(row["harness"], self.config["harness"])
         self.assertEqual(len(list(study.root.glob("trials/*/*/*/search/result.json"))), 1)
 
+    def test_explicit_generator_model_and_budget_final_replies_reach_formal_comparison(self):
+        with self.environment():
+            study = self.study(
+                max_steps=4, final_reply_on_limit=True, generator_model="explicit-generator"
+            )
+            result = asyncio.run(study.run())
+        self.assertTrue(result["comparable"])
+        self.assertEqual(result["mean_pass_rate"]["baseline"], 0)
+        self.assertTrue(
+            all(result["mean_pass_rate"][arm] == 1 for arm in ("fixed", "random", "failure"))
+        )
+        generation_inputs = list(study.root.glob("trials/*/*/*/generation/*/input.json"))
+        self.assertEqual(len(generation_inputs), 2)
+        for path in generation_inputs:
+            self.assertEqual(read_json(path)["config"]["model"], "explicit-generator")
+            for call in path.parent.glob("calls/*.json"):
+                self.assertEqual(
+                    read_json(call)["request"]["settings"]["model"], "explicit-generator"
+                )
+        final_samples = list(
+            study.root.glob("trials/*/*/*/search/operations/*/samples/*/model/solve/4.json")
+        )
+        self.assertTrue(final_samples)
+        for path in final_samples:
+            self.assertTrue(read_json(path)["input"]["data"]["action_budget_exhausted"])
+            config = read_json(path.parents[2] / "input.json")["config"]
+            self.assertEqual(config["model"], "explicit-fixture")
+            self.assertEqual(config["max_calls"], 10)
+
     def test_incomplete_search_is_retained_and_excluded_from_comparison(self):
         with self.environment():
             study = self.study(max_steps=1)
