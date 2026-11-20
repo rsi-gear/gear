@@ -95,4 +95,6 @@ PYTHONPATH=python:python/tests /tmp/gear-sentinel-env/bin/python \
 
 CI 的 `Curriculum / tool environments CPU` 作业安装固定 Tau2 并运行这些测试；未安装可选依赖时只运行纯采样检查，跳过 native 集成，不把跳过项当作通过。
 
-[首版真实模型接入记录](../../research/sentinel-retail-2026-11-20/README.zh-CN.md)：冻结源码 `03c8f4d66`，11 次 `gpt-6-astra` 调用、154,167 tokens，生成一条待准入任务，离线重放未新增调用。该首版原始失败为明确夹具，不能声称真实源失败采集或收益；须在原冻结版本验证。归档附上游 MIT 许可。后续还需实际模型采集探针、retail 的正式搜索交接和独立效果对照。
+[首版真实模型接入记录](../../research/sentinel-retail-2026-11-20/README.zh-CN.md)：冻结源码 `03c8f4d66`，11 次 `gpt-6-astra` 调用、154,167 tokens，生成一条待准入任务，离线重放未新增调用。该首版原始失败为明确夹具，不能声称真实源失败采集或收益；须在原冻结版本验证。
+
+[实际 solver 与记忆探针](../../research/sentinel-retail-2026-11-20-v2/README.zh-CN.md)：冻结源码 `9d7a3e4c8`，正常 harness 的实际样本成功，明确提前结束的诊断对照实际失败。失败驱动生成 1 条候选，执行校准通过，但语义审查拒绝；记忆正常传递，混合池报告生成来源缺额且不补齐。23 次完成调用有 332,115 tokens；另 1 次容量失败单独保留并确认终态，随后在剩余预算内作一次明确恢复，全尝试 token 总数未知。导出后工具与决定重放一致、无新增模型请求。两份归档均附上游 MIT 许可。该诊断对照不代表自然失败率或收益；retail 的正式搜索交接、独立效果对照和 mastery 测量仍待验收。

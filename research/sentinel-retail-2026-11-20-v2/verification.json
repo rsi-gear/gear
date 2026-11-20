@@ -1,0 +1,19 @@
+{
+  "status": "passed",
+  "unique_completed_model_receipts_verified": {
+    "baseline": 8,
+    "stop-control": 2,
+    "generation": 13,
+    "carry": 0
+  },
+  "new_model_submissions": 0,
+  "retained_infrastructure_failures": 1,
+  "actual_tools_and_native_grading_reexecuted": true,
+  "result_digests": {
+    "baseline": "sha256:2c2ff26026fc980c49ef4deff6bba61e87d1585789653b4543511a9054665b2f",
+    "stop-control": "sha256:3a1c8839ffb9bab0fb9634dec50aca9be8877294077b3102070929652a214fda",
+    "generation": "sha256:e7f4dcf9b769a9ca88e27da548db45ae9256edef932ac98fa2b97178286f90c0",
+    "carry": "sha256:13133465a7bcd91ac0ca327a4d6eb5a303d1f2c1edae71717443461f187a7e2b"
+  },
+  "pool_digest": "sha256:9993acaabbdbe0efaee8c0601b9f99b25f92c6a4c38143b26f509c5df7851111"
+}
