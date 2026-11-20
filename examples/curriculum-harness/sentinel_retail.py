@@ -154,16 +154,24 @@ class RetailSession:
         }
 
 
-def replay_reference(backend, database, user_id, trace):
-    """Re-execute reads as well as writes; reject changed observations and partial traces."""
+def replay_trace(backend, database, user_id, trace, *, require_complete=True):
+    """Re-execute observed reads/writes, including genuine native tool errors.
+
+    A faithfully recorded failed solver trajectory is valid evidence. It is not
+    necessarily a valid reference; ``replay_reference`` enforces that distinction.
+    """
     session = RetailSession(backend, database, user_id)
     if (
         trace.get("schema_version") != 1
         or trace.get("environment_id") != session.identity
         or trace.get("initial") != session.initial
-        or trace.get("status") != "completed"
-        or not trace.get("steps")
-        or trace["steps"][-1].get("kind") != "finish"
+        or trace.get("status") not in ("completed", "incomplete")
+        or not isinstance(trace.get("steps"), list)
+        or (require_complete and trace["status"] != "completed")
+        or (
+            trace["status"] == "completed"
+            and (not trace["steps"] or trace["steps"][-1].get("kind") != "finish")
+        )
     ):
         raise ValueError("reference must be complete and bound to this training environment")
     authenticated = False
@@ -197,12 +205,23 @@ def replay_reference(backend, database, user_id, trace):
         elif step["kind"] == "message":
             if not step.get("text") or not step.get("reply"):
                 raise ValueError("reference conversation is incomplete")
-        elif step["kind"] != "finish" or index != len(trace["steps"]) - 1:
+        elif (
+            step["kind"] != "finish"
+            or index != len(trace["steps"]) - 1
+            or trace["status"] != "completed"
+            or not step.get("text")
+        ):
             raise ValueError("reference has invalid or post-terminal steps")
     if trace.get("final") != session.snapshot():
         raise ValueError("reference terminal database changed")
     if not writes or session.initial == session.snapshot():
         errors.append("no_state_change")
+    return session, writes, sorted(set(errors))
+
+
+def replay_reference(backend, database, user_id, trace):
+    """Require a complete, error-free, authenticated state-changing reference."""
+    session, writes, errors = replay_trace(backend, database, user_id, trace)
     if errors:
         raise ValueError("invalid retail reference: " + ", ".join(sorted(set(errors))))
     return session, writes
@@ -252,6 +271,41 @@ def build_task(draft, trace):
             "evaluation_criteria": {"actions": actions, "reward_basis": ["DB"]},
         }
     )
+
+
+def validate_task(task_data, reference):
+    """Reject implicit initialization, executable assertions and mismatched gold actions."""
+    from tau2.data_model.tasks import Task
+
+    task = Task.model_validate(task_data)
+    criteria = task.evaluation_criteria
+    if (
+        task.initial_state is not None
+        or task.required_documents
+        or task.user_tools
+        or not isinstance(task.ticket, str)
+        or not task.ticket.strip()
+        or not isinstance(task.user_scenario.instructions, str)
+        or not task.user_scenario.instructions.strip()
+        or task.user_scenario.persona is not None
+        or criteria is None
+        or criteria.reward_basis != ["DB"]
+        or criteria.env_assertions
+        or criteria.communicate_info
+        or criteria.nl_assertions
+    ):
+        raise ValueError("caller supports explicit dialogue tasks with DB-only native reward")
+    reference_actions = [
+        {"action_id": step["execution"]["call"]["id"], **step["action"], "requestor": "assistant"}
+        for step in reference["steps"]
+        if step["kind"] == "tool"
+    ]
+    actual_actions = [
+        action.model_dump(mode="json", exclude_none=True) for action in criteria.actions or ()
+    ]
+    if actual_actions != reference_actions:
+        raise ValueError("native task actions must match the independently replayed reference")
+    return task
 
 
 def calibrate(backend, database, user_id, trace, task):

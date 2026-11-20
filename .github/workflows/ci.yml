@@ -127,7 +127,7 @@ jobs:
       - name: Install the CPU retail environment
         run: python -m pip install './python' './.tau2'
       - name: Test reference execution and task validation without model calls
-        run: python -m unittest discover -s python/tests -p 'test_sentinel_retail.py' -v
+        run: python -m unittest discover -s python/tests -p 'test_sentinel*.py' -v
         env:
           PYTHONPATH: python
           GEAR_SENTINEL_TAU2_PATH: ${{ github.workspace }}/.tau2

@@ -21,6 +21,7 @@ from gear.core.schema import validate_output
 from gear.curriculum import (
     ContrastiveDiagnoser,
     ExtractOutcomeCases,
+    FailureMode,
     GeneratePractice,
     MergeFailureMemory,
     ModelInput,
@@ -98,10 +99,8 @@ def freeze(path, value):
     return value
 
 
-def controller_cases(observations, *, environment_id, family, seed, limit):
-    """Deduplicate task/trace pairs after resolving attempts; sample both outcomes."""
-    if type(limit) is not int or not 2 <= limit <= 128:
-        raise ValueError("case limit must be between 2 and 128")
+def authorized_cases(observations, *, environment_id, family):
+    """Normalize caller-authenticated observations; never resolve arbitrary references."""
     records, traces = [], {}
     for observation in observations:
         if not isinstance(observation, dict) or set(observation) != {"record", "tool_calls"}:
@@ -135,14 +134,35 @@ def controller_cases(observations, *, environment_id, family, seed, limit):
             raise ValueError("one source attempt has conflicting tool traces")
         records.append(record)
         traces[key] = calls
-    rng = DeterministicRandom(str(seed))
     eligible = ExtractOutcomeCases()(records)
+    return eligible, {
+        case.case_id: traces[(case.record.sample_id, case.record.attempt)] for case in eligible
+    }
+
+
+def controller_cases(observations, *, environment_id, family, seed, limit, previous=()):
+    """Deduplicate task/trace pairs after resolving attempts; sample both outcomes."""
+    if type(limit) is not int or not 2 <= limit <= 128:
+        raise ValueError("case limit must be between 2 and 128")
+    eligible, traces = authorized_cases(observations, environment_id=environment_id, family=family)
+    old_cases, old_traces = authorized_cases(previous, environment_id=environment_id, family=family)
+    rng = DeterministicRandom(str(seed))
     buckets, seen = {"failure": [], "success": []}, {}
+    for case in old_cases:
+        if case.outcome not in buckets:
+            continue
+        record = case.record
+        key = digest(
+            [record.task_id, record.policy_id, record.environment_id, old_traces[case.case_id]]
+        )
+        if key in seen and seen[key] != case.outcome:
+            raise ValueError("identical historical task/tool trace has conflicting outcomes")
+        seen[key] = case.outcome
     for case in sorted(eligible, key=lambda case: case.case_id):
         if case.outcome not in buckets:
             continue
         record = case.record
-        calls = traces[(record.sample_id, record.attempt)]
+        calls = traces[case.case_id]
         key = digest([record.task_id, record.policy_id, record.environment_id, calls])
         if key in seen:
             if seen[key] != case.outcome:
@@ -156,8 +176,103 @@ def controller_cases(observations, *, environment_id, family, seed, limit):
         )
     failure_count = min(len(buckets["failure"]), limit - min(len(buckets["success"]), limit // 2))
     selected = buckets["failure"][:failure_count] + buckets["success"][: limit - failure_count]
-    return tuple(selected), {
-        case.case_id: traces[(case.record.sample_id, case.record.attempt)] for case in selected
+    return tuple(selected), {case.case_id: traces[case.case_id] for case in selected}
+
+
+async def retail_dialogue(
+    session, model_json, checkpoint, *, opening, goal, harness, max_steps, role
+):
+    """Concrete retail loop shared by exploration and fixed-weight solver collection."""
+    trace = {
+        "schema_version": 1,
+        "environment_id": session.identity,
+        "initial": session.initial,
+        "goal": goal,
+        "opening": opening,
+        "steps": [],
+        "status": "incomplete",
+        "final": session.snapshot(),
+    }
+    conversation = [{"role": "user", "content": opening}]
+    for index in range(max_steps):
+        response = await model_json(
+            f"{role}/{index}",
+            ModelInput(
+                harness,
+                ACTION_SCHEMA,
+                {
+                    "policy": session.environment.policy,
+                    "tools": session.tool_schemas(),
+                    "conversation": conversation,
+                },
+            ),
+        )
+        arguments = json.loads(response["arguments_json"])
+        if not isinstance(arguments, dict):
+            raise ValueError("tool arguments must be a JSON object")
+        if response["kind"] == "tool":
+            if response["text"]:
+                raise ValueError("a reference step cannot both call a tool and speak")
+            action = {"name": response["name"], "arguments": arguments}
+            execution = session.execute(action, index)
+            step = {"kind": "tool", "action": action, "execution": execution}
+            conversation.extend(
+                [
+                    {"role": "assistant", "tool_call": execution["call"]},
+                    {"role": "tool", "content": execution["response"]["content"]},
+                ]
+            )
+        else:
+            if response["name"] or arguments or not response["text"].strip():
+                raise ValueError("reference messages require text and no tool arguments")
+            step = {"kind": response["kind"], "text": response["text"]}
+            conversation.append({"role": "assistant", "content": response["text"]})
+            if response["kind"] == "message":
+                reply = await model_json(
+                    f"user/{index + 1}",
+                    ModelInput(
+                        USER_PROMPT,
+                        object_schema({"message": TEXT}),
+                        {
+                            "goal": goal,
+                            "customer": session.user_material(),
+                            "conversation": [
+                                item
+                                for item in conversation
+                                if "content" in item and item["role"] in ("user", "assistant")
+                            ],
+                        },
+                    ),
+                )
+                step["reply"] = reply["message"]
+                conversation.append({"role": "user", "content": reply["message"]})
+            else:
+                trace["status"] = "completed"
+        trace["steps"].append(step)
+        trace["final"] = session.snapshot()
+        checkpoint(f"steps/{index}", step)
+        if trace["status"] == "completed":
+            break
+    return trace
+
+
+def implementation_identity():
+    gear_root = Path(gear.curriculum.__file__).parent.parent
+    paths = (
+        list((gear_root / "curriculum").glob("*.py"))
+        + list((gear_root / "core").glob("*.py"))
+        + list(Path(__file__).parent.glob("sentinel_*.py"))
+        + [
+            gear_root / "canonical.py",
+            Path(__file__).with_name("model_calls.py"),
+            Path(__file__).with_name("ifeval_experiment.py"),
+        ]
+    )
+    return {
+        str(path.relative_to(Path(__file__).resolve().parents[2])): hashlib.sha256(
+            path.read_bytes()
+        ).hexdigest()
+        for path in paths
     }
 
 
@@ -182,7 +297,7 @@ class RetailGenerator:
             "max_cases",
         }
         if (
-            set(config) != expected
+            set(config) - {"history"} != expected
             or config["schema_version"] != 1
             or config["partition"] != "train"
         ):
@@ -205,39 +320,89 @@ class RetailGenerator:
         config = self.config
         self.backend = load_backend(source_root)
         self.session = RetailSession(self.backend, config["database"], config["user_id"])
-        self.cases, self.case_traces = controller_cases(
-            config["observations"],
-            environment_id=self.session.identity,
-            family=config["family"],
-            seed=config["seed"],
-            limit=config["max_cases"],
-        )
         self.calls = calls
         self.diagnoser = ContrastiveDiagnoser()
         self.generator = GeneratePractice(prompt=WRITER_PROMPT)
         self.validator = ValidatePractice("sentinel-retail-v1")
-        gear_root = Path(gear.curriculum.__file__).parent.parent
-        paths = (
-            list((gear_root / "curriculum").glob("*.py"))
-            + list((gear_root / "core").glob("*.py"))
-            + [
-                gear_root / "canonical.py",
-                Path(__file__),
-                Path(__file__).with_name("sentinel_retail.py"),
-                Path(__file__).with_name("model_calls.py"),
-                Path(__file__).with_name("ifeval_experiment.py"),
-            ]
+        self.scope = {"environment_id": self.session.identity, "family": config["family"]}
+        history = config.get(
+            "history",
+            {
+                "schema_version": 1,
+                "scope": self.scope,
+                "observations": [],
+                "memory": [],
+            },
         )
-        implementation = {
-            str(path.relative_to(Path(__file__).resolve().parents[2])): hashlib.sha256(
-                path.read_bytes()
-            ).hexdigest()
-            for path in paths
-        }
+        if (
+            set(history) != {"schema_version", "scope", "observations", "memory"}
+            or type(history["schema_version"]) is not int
+            or history["schema_version"] != 1
+            or history["scope"] != self.scope
+        ):
+            raise ValueError("failure memory must belong to this explicit training scope")
+        prior_cases, _ = authorized_cases(history["observations"], **self.scope)
+        prior_by_id = {case.case_id: case for case in prior_cases}
+        self.memory = []
+        for row in history["memory"]:
+            if row.get("state") != "active" or row.get("mastery") is not None:
+                raise ValueError(
+                    "this caller has no measured mastery probes; memory must remain active"
+                )
+            mode = FailureMode(
+                **{
+                    **row,
+                    **{
+                        key: tuple(row[key])
+                        for key in ("support_case_ids", "counterexample_case_ids", "families")
+                    },
+                }
+            )
+            if mode.diagnoser_id != self.diagnoser.identity or mode.families != (config["family"],):
+                raise ValueError("failure memory diagnoser or family changed")
+            for ids, outcome in (
+                (mode.support_case_ids, "failure"),
+                (mode.counterexample_case_ids, "success"),
+            ):
+                if any(
+                    key not in prior_by_id or prior_by_id[key].outcome != outcome for key in ids
+                ):
+                    raise ValueError(
+                        "failure memory requires its original complete supporting cases"
+                    )
+            policies = {prior_by_id[key].record.policy_id for key in mode.support_case_ids}
+            if any(
+                prior_by_id[key].record.policy_id not in policies
+                for key in mode.counterexample_case_ids
+            ):
+                raise ValueError("memory counterexamples must use a comparable solver policy")
+            self.memory.append(mode)
+        self.memory = MergeFailureMemory()(self.memory, ())
+        # A completed round is immutable. Retry attempts must be reconciled before
+        # exporting it; later probes use new sample IDs, not overwritten evidence.
+        prior_samples = {}
+        for row in history["observations"]:
+            prior_samples.setdefault(row["record"]["sample_id"], set()).add(digest(row))
+        for row in config["observations"]:
+            prior = prior_samples.get(row["record"]["sample_id"])
+            if prior is not None and digest(row) not in prior:
+                raise ValueError(
+                    "historical samples are immutable; use a new sample ID for a new probe"
+                )
+        ledger = {digest(row): row for row in [*history["observations"], *config["observations"]]}
+        self.history_observations = [ledger[key] for key in sorted(ledger)]
+        self.all_cases, _ = authorized_cases(self.history_observations, **self.scope)
+        self.cases, self.case_traces = controller_cases(
+            config["observations"],
+            **self.scope,
+            seed=config["seed"],
+            limit=config["max_cases"],
+            previous=history["observations"],
+        )
         self.identity = {
             "config": self.config,
             "backend": self.backend["identity"],
-            "implementation": implementation,
+            "implementation": implementation_identity(),
             "components": [
                 component.describe().to_dict()
                 for component in (self.diagnoser, self.generator, self.validator)
@@ -261,6 +426,10 @@ class RetailGenerator:
                     "tokens": token_usage(receipts).get("tokens"),
                     "call_limit": self.config["max_calls"],
                 },
+                "memory_ref": {
+                    "path": "memory.json",
+                    "digest": digest(read_json(self.root / "memory.json")),
+                },
             }
         return freeze(self.root / (name + ".json"), value)
 
@@ -273,6 +442,8 @@ class RetailGenerator:
             effort=self.config["effort"],
             output_schema=prepared.schema,
         )
+        if receipt.get("status") != "completed":
+            raise RuntimeError("generation model result is incomplete or unknown")
         response = json.loads(receipt["response"])
         validate_output(prepared.schema, response)
         self.checkpoint("model/" + key, {"input": asdict(prepared), "receipt": receipt})
@@ -285,13 +456,15 @@ class RetailGenerator:
 
     async def _generate(self):
         if not any(case.outcome == "failure" for case in self.cases):
+            self.save_memory(self.memory)
             return self.checkpoint("result", {"status": "no_failures", "selected": []})
-        prepared = self.diagnoser.prepare(self.cases)
+        prepared = self.diagnoser.prepare(self.cases, memory=self.memory)
         prepared = replace(prepared, data={**prepared.data, "tool_calls": self.case_traces})
         diagnosis = self.diagnoser.parse(
             await self.model_json("diagnose", prepared), cases=self.cases
         )
-        memory = MergeFailureMemory()((), diagnosis)
+        memory = MergeFailureMemory()(self.memory, diagnosis)
+        self.save_memory(memory)
         self.checkpoint("diagnosis", [asdict(mode) for mode in memory])
         targets = SelectLearningTargets()(
             memory, budget=1, rng=DeterministicRandom(str(self.config["seed"]))
@@ -324,74 +497,16 @@ class RetailGenerator:
                 {**user_data, "conversation": []},
             ),
         )
-        trace = {
-            "schema_version": 1,
-            "environment_id": session.identity,
-            "initial": session.initial,
-            "goal": goal["goal"],
-            "opening": opening["message"],
-            "steps": [],
-            "status": "incomplete",
-        }
-        conversation = [{"role": "user", "content": opening["message"]}]
-        for index in range(self.config["max_steps"]):
-            response = await self.model_json(
-                f"explore/{index}",
-                ModelInput(
-                    EXPLORER_PROMPT,
-                    ACTION_SCHEMA,
-                    {
-                        "policy": self.backend["policy"],
-                        "tools": session.tool_schemas(),
-                        "conversation": conversation,
-                    },
-                ),
-            )
-            arguments = json.loads(response["arguments_json"])
-            if not isinstance(arguments, dict):
-                raise ValueError("tool arguments must be a JSON object")
-            if response["kind"] == "tool":
-                if response["text"]:
-                    raise ValueError("a reference step cannot both call a tool and speak")
-                action = {"name": response["name"], "arguments": arguments}
-                execution = session.execute(action, index)
-                step = {"kind": "tool", "action": action, "execution": execution}
-                conversation.extend(
-                    [
-                        {"role": "assistant", "tool_call": execution["call"]},
-                        {"role": "tool", "content": execution["response"]["content"]},
-                    ]
-                )
-            else:
-                if response["name"] or arguments or not response["text"].strip():
-                    raise ValueError("reference messages require text and no tool arguments")
-                step = {"kind": response["kind"], "text": response["text"]}
-                conversation.append({"role": "assistant", "content": response["text"]})
-                if response["kind"] == "message":
-                    reply = await self.model_json(
-                        f"user/{index + 1}",
-                        ModelInput(
-                            USER_PROMPT,
-                            object_schema({"message": TEXT}),
-                            {
-                                **user_data,
-                                "conversation": [
-                                    item
-                                    for item in conversation
-                                    if "content" in item and item["role"] in ("user", "assistant")
-                                ],
-                            },
-                        ),
-                    )
-                    step["reply"] = reply["message"]
-                    conversation.append({"role": "user", "content": reply["message"]})
-                else:
-                    trace["status"] = "completed"
-            trace["steps"].append(step)
-            trace["final"] = session.snapshot()
-            self.checkpoint(f"steps/{index}", step)
-            if trace["status"] == "completed":
-                break
+        trace = await retail_dialogue(
+            session,
+            self.model_json,
+            self.checkpoint,
+            opening=opening["message"],
+            goal=goal["goal"],
+            harness=EXPLORER_PROMPT,
+            max_steps=self.config["max_steps"],
+            role="explore",
+        )
         self.checkpoint("reference", trace)
         try:
             replay_reference(self.backend, self.config["database"], self.config["user_id"], trace)
@@ -406,7 +521,7 @@ class RetailGenerator:
                 },
             )
         # Task writing only starts after execution AND independent replay complete.
-        writer = self.generator.prepare(plan, cases=self.cases)
+        writer = self.generator.prepare(plan, cases=self.all_cases)
         written = await self.model_json(
             "rewrite",
             replace(
@@ -481,10 +596,10 @@ class RetailGenerator:
                 written["instruction"].strip()
                 not in {
                     item["record"].get("instruction", "").strip()
-                    for item in self.config["observations"]
+                    for item in self.history_observations
                 },
                 "structural",
-                {"comparison_digest": digest(self.config["observations"])},
+                {"comparison_digest": digest(self.history_observations)},
             ),
         }
         evidence_values = self.checkpoint(
@@ -511,8 +626,9 @@ class RetailGenerator:
         )
         report = self.validator.assess(validation, evidence)
         pool = SelectPractice()(
-            drafts, report, budget=1, base_pool_version=digest(self.config["observations"])
+            drafts, report, budget=1, base_pool_version=digest(self.history_observations)
         )
+
         return self.checkpoint(
             "result",
             {
@@ -526,6 +642,17 @@ class RetailGenerator:
                 "reference_digest": digest(trace),
                 "environment_id": session.identity,
                 "training_eligible": False,
+            },
+        )
+
+    def save_memory(self, memory):
+        self.checkpoint(
+            "memory",
+            {
+                "schema_version": 1,
+                "scope": self.scope,
+                "observations": self.history_observations,
+                "memory": [asdict(mode) for mode in memory],
             },
         )
 

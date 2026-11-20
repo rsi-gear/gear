@@ -332,6 +332,100 @@ class NativeRetailTests(unittest.TestCase):
                     self.assertIn(reference["check"], evidence)
             self.assertEqual(result["model_usage"]["completed_calls"], len(calls.submissions))
 
+    def test_memory_resolves_old_support_outside_the_current_sample(self):
+        with tempfile.TemporaryDirectory() as root:
+            first = Path(root) / "first"
+            _, result = self.generate(first)
+            history = json.loads((first / "memory.json").read_text())
+            old_support = history["memory"][0]["support_case_ids"]
+            self.assertEqual(result["memory_ref"]["digest"], digest(history))
+            current = observation(
+                "failure-2", task="new-task", environment=history["scope"]["environment_id"]
+            )
+            calls = FixtureCalls()
+            second = Path(root) / "second"
+            _, result = self.generate(
+                second, calls, self.config(history=history, observations=[current])
+            )
+            merged = json.loads((second / "memory.json").read_text())
+            self.assertEqual(len(merged["memory"][0]["support_case_ids"]), 2)
+            writer = json.loads(calls.receipts["rewrite"][0][0])
+            self.assertEqual(len(writer["cases"]), 2)
+            self.assertTrue(set(old_support) <= {case["case_id"] for case in writer["cases"]})
+            self.assertEqual(len(json.loads(calls.receipts["diagnose"][0][0])["cases"]), 1)
+            self.assertEqual(
+                json.loads(calls.receipts["diagnose"][0][0])["memory"], history["memory"]
+            )
+            third = Path(root) / "third"
+            _, repeated = self.generate(
+                third, FixtureCalls(), self.config(history=merged, observations=[current])
+            )
+            self.assertEqual(json.loads((third / "memory.json").read_text()), merged)
+            self.assertEqual(repeated["memory_ref"]["digest"], result["memory_ref"]["digest"])
+            self.assertEqual(repeated["status"], "no_failures")
+
+    def test_cross_round_duplicate_trace_does_not_inflate_recurrence(self):
+        with tempfile.TemporaryDirectory() as root:
+            first = Path(root) / "first"
+            self.generate(first)
+            history = json.loads((first / "memory.json").read_text())
+            duplicate = copy.deepcopy(history["observations"][0])
+            duplicate["record"]["sample_id"] = "a-second-physical-sample"
+            calls = FixtureCalls()
+            second = Path(root) / "second"
+            _, result = self.generate(
+                second, calls, self.config(history=history, observations=[duplicate])
+            )
+            self.assertEqual(result["status"], "no_failures")
+            self.assertEqual(calls.submissions, [])
+            self.assertEqual(
+                json.loads((second / "memory.json").read_text())["memory"], history["memory"]
+            )
+
+    def test_no_new_failure_preserves_active_memory_without_claiming_mastery(self):
+        with tempfile.TemporaryDirectory() as root:
+            first = Path(root) / "first"
+            self.generate(first)
+            history = json.loads((first / "memory.json").read_text())
+            success = observation(
+                "success-only",
+                True,
+                task="success-task",
+                environment=history["scope"]["environment_id"],
+            )
+            calls = FixtureCalls()
+            second = Path(root) / "second"
+            _, result = self.generate(
+                second, calls, self.config(history=history, observations=[success])
+            )
+            self.assertEqual(result["status"], "no_failures")
+            self.assertEqual(calls.submissions, [])
+            self.assertEqual(
+                json.loads((second / "memory.json").read_text())["memory"], history["memory"]
+            )
+
+    def test_memory_scope_missing_evidence_and_rewritten_samples_are_rejected(self):
+        with tempfile.TemporaryDirectory() as root:
+            first = Path(root) / "first"
+            self.generate(first)
+            history = json.loads((first / "memory.json").read_text())
+            for change in ("scope", "missing", "mastery", "retry"):
+                with self.subTest(change=change):
+                    modified = copy.deepcopy(history)
+                    config = self.config(history=modified)
+                    if change == "scope":
+                        modified["scope"]["family"] = "foreign"
+                    elif change == "missing":
+                        modified["observations"] = []
+                    elif change == "mastery":
+                        modified["memory"][0]["state"] = "mastered"
+                    else:
+                        config["observations"][0]["record"]["attempt"] = 1
+                    calls = FixtureCalls()
+                    with self.assertRaises(ValueError):
+                        self.generate(Path(root) / change, calls, config)
+                    self.assertEqual(calls.submissions, [])
+
     def test_recovery_after_tool_state_saved_does_not_charge_or_apply_twice(self):
         with tempfile.TemporaryDirectory() as root:
             calls = FixtureCalls()
