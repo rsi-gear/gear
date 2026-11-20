@@ -248,7 +248,7 @@ class SolverCollectionTests(unittest.TestCase):
             with self.subTest(change=change), tempfile.TemporaryDirectory() as root:
                 config = self.config()
                 if change == "partition":
-                    config["partition"] = "test"
+                    config["partition"] = "unspecified"
                 elif change == "initial_state":
                     config["task"]["initial_state"] = {}
                 elif change == "actions":
@@ -260,6 +260,24 @@ class SolverCollectionTests(unittest.TestCase):
                     collector = RetailCollector(root, TAU_SOURCE, config, calls)
                     asyncio.run(collector.collect())
                 self.assertEqual(calls.submissions, [])
+
+    def test_private_evaluation_keeps_its_partition_and_cannot_be_generation_input(self):
+        for partition in ("validation", "test"):
+            with self.subTest(partition=partition), tempfile.TemporaryDirectory() as root:
+                _, result = self.collect(
+                    root, SolverCalls(self.reference["steps"]), partition=partition
+                )
+                record = result["observation"]["record"]
+                self.assertEqual(record["partition"], partition)
+                self.assertTrue(record["passed"])
+                with self.assertRaisesRegex(ValueError, "training scope"):
+                    controller_cases(
+                        [result["observation"]],
+                        environment_id=record["environment_id"],
+                        family=record["family"],
+                        seed=0,
+                        limit=2,
+                    )
 
     def test_unknown_model_and_invalid_action_are_never_failed_native_observations(self):
         with tempfile.TemporaryDirectory() as root:

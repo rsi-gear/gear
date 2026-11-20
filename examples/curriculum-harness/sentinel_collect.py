@@ -1,6 +1,6 @@
 """Collect an actual fixed-weight retail solver attempt for curriculum diagnosis.
 
-The caller supplies an authorized training task, explicit database and executable
+The caller supplies an explicitly partitioned task, database and executable
 reference. No benchmark registry, GPU update, or curriculum execution adapter.
 """
 
@@ -72,9 +72,9 @@ class RetailCollector:
             set(config) != expected
             or type(config["schema_version"]) is not int
             or config["schema_version"] != 1
-            or config["partition"] != "train"
+            or config["partition"] not in ("train", "validation", "test")
         ):
-            raise ValueError("solver collection requires an explicit authorized training task")
+            raise ValueError("solver collection requires an explicit authorized task partition")
         for key in ("family", "user_id", "model", "effort", "harness", "sample_id"):
             if not isinstance(config[key], str) or not config[key].strip():
                 raise ValueError("nonempty solver setting required: " + key)
@@ -237,6 +237,7 @@ class RetailCollector:
                     instruction=self.task.ticket,
                     feedback=feedback,
                     evidence_refs=tuple(evidence),
+                    partition=config["partition"],
                 )
             ),
             "tool_calls": [step["action"] for step in trace["steps"] if step["kind"] == "tool"],
