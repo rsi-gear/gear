@@ -1,0 +1,7 @@
+{
+  "status": "passed",
+  "result_digest": "sha256:57ea18934075f6e07d3e9203dce1968b3e49ed8259c94586012b473b4536314a",
+  "model_responses_replayed": 11,
+  "new_model_submissions": 0,
+  "native_tools_and_verifier_reexecuted": true
+}

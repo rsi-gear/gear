@@ -62,4 +62,6 @@ PYTHONPATH=python:python/tests /tmp/gear-sentinel-env/bin/python \
 
 本批 21 项定向检查通过，其中 15 项是新 SENTINEL 测试，6 项复用模型回执恢复与隔离检查；另有 58 项 curriculum 回归通过。新测试中的 retail 执行、取消、退款、参考重放和 native DB 正负例检查是真实代码执行；模型、原始 solver verdict 和语义审查均为明确替身。还覆盖记录后返回丢失、输入／模型漂移、截断、未知模型结果、身份认证、工具参数、调用方输入被修改以及训练范围隔离。
 
-CI 的 `Curriculum / tool environments CPU` 作业安装固定 Tau2 并运行这些测试；未安装可选依赖时只运行纯采样检查，跳过 native 集成，不把跳过项当作通过。当前没有真实模型工具探索结果、完整 Tau2 评测或 SENTINEL 相对 fixed/random 的收益证据。下一步是将源失败采集、跨轮记忆与生成池接入固定权重的正式 harness 搜索。
+CI 的 `Curriculum / tool environments CPU` 作业安装固定 Tau2 并运行这些测试；未安装可选依赖时只运行纯采样检查，跳过 native 集成，不把跳过项当作通过。
+
+[真实模型接入记录](../../research/sentinel-retail-2026-11-20/README.zh-CN.md)已完成：冻结源码 `03c8f4d66`，11 次 `gpt-6-astra` 调用、154,167 tokens，实际工具探索与重写产生一条通过当前验证的待准入任务，离线重放未新增调用。原始 student 失败仍是明确夹具；这不是收益对照，也没有完整 Tau2 基准成绩。归档保留模型输入中的上游策略和工具描述，并附原始 MIT 许可。下一步是将真实源失败采集、跨轮记忆与生成池接入固定权重的正式 harness 搜索。
