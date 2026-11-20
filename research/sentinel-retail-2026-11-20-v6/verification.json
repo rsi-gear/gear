@@ -1,0 +1,46 @@
+{
+  "status": "passed",
+  "authored_tasks_calibrated": 5,
+  "completed_task_records_replayed": 5,
+  "completed_task_failures": 5,
+  "interrupted_prefix": {
+    "status": "passed",
+    "workspace": "/private/tmp/gear-sentinel-comparison-v6/trials/e8571ead020e53f4af0ebf443974027bf63920b7bab46fc3421fdd028063adb3/fixed/0/search/operations/5b9129e6b40b73b98c225edac9297a2ae6845f135c6fe22928c55e4c08343413/samples/8d29549d56f91ef3d3f4166c345734fee1409625375df7d4cf8a0bc889868e7f",
+    "completed_calls": 10,
+    "interrupted_calls": 1,
+    "steps": 5,
+    "task_score": null,
+    "native_turn_status": "interrupted",
+    "new_model_submissions": 0
+  },
+  "formal_scored_slots": 3,
+  "constraint_valid_candidates": 1,
+  "known_completed_native_tokens": 3575238,
+  "all_attempt_tokens": null,
+  "final_test_opened": false,
+  "comparative_effect": null,
+  "new_model_submissions": 0,
+  "sdk_imported": false,
+  "negative_checks": [
+    {
+      "mutation": "candidate_prompt",
+      "rejected": true,
+      "reason": "candidate differs from sealed bytes"
+    },
+    {
+      "mutation": "meta_input",
+      "rejected": true,
+      "reason": "Meta request or completion changed"
+    },
+    {
+      "mutation": "interrupted_request",
+      "rejected": true,
+      "reason": "replayed request differs from the original submission"
+    },
+    {
+      "mutation": "invented_score",
+      "rejected": true,
+      "reason": "CPU prefix, checkpoints or native inventory differ"
+    }
+  ]
+}

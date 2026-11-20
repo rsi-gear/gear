@@ -6,7 +6,27 @@ V6 的原始进程退出码为 1。随后只读检查唯一未返回的原生 tu
 
 中止时有 141 次逻辑提交、140 份完成回执、3,575,238 已知 native tokens；未完成请求的用量未知，全部尝试的总用量保持未知。两条初始训练采集、基线 validation 及两条原 harness 训练评估均完整结束并评分失败。Meta 提交的一条 1,640 字符候选通过长度约束，但候选训练仅保存 10 份回执和五步对话前缀，没有完整任务评分或训练门槛结果。尚未开始 random/failure 生成，也没有任何 arm 选型或最终测试。
 
-两条初始采集记录（62 次调用、1,680,082 tokens）及固定池的原生参考／负例校准已离线复核；其余完整轨迹、未完成前缀及正式运行的完整归档仍待核验。本段仅报告已观察到的终态，不把不完整尝试当作有效对照。
+| 阶段 | 完成调用 | 已知 native tokens |
+| --- | ---: | ---: |
+| 两条训练来源采集 | 62 | 1,680,082 |
+| 基线 validation | 31 | 721,883 |
+| 原 harness 训练评估 | 36 | 865,946 |
+| Meta 提案 | 1 | 17,411 |
+| 候选训练前缀 | 10 | 289,916 |
+
+最后一次候选请求的用量另列未知；启动前 10,617 tokens 的可用性检查也单独核算，不计入上表。
+
+五条完整任务记录、候选的五步未完成前缀、五道原始任务的参考／负例校准、固定池准入、三份正式操作回执、实际 Meta 输入与候选封存、运行时评分转换及完整调用账目均已离线核验。[核验结果](verification.json)通过，修改候选提示、Meta 输入、中断请求或补造任务得分的四项检查全部被拒绝。核验没有导入模型 SDK 或提交新请求。
+
+[evidence.json](evidence.json) 保存上述证据，[manifest.json](manifest.json) 固定其 SHA-256 为 `360d27946a7bfb4b1889c7aa4d44f8eab399f97459f1e6bfd4f91ee33a65947d`。原始原生回执摘要、请求和 ID 对应关系在导出前核对，随后移除 SDK thread/turn ID；中断请求仍单独保留，不能生成完整任务分数或补填其 usage。
+
+```sh
+/path/to/sentinel-env/bin/python research/sentinel-retail-2026-11-20-v6/verify.py \
+  --repository /path/to/gear-at-f5947efb5 \
+  --tau2-source /path/to/pinned-tau2 --negative-checks
+```
+
+该归档证明中止前的实际行为与账目一致，不把不完整尝试当作有效对照。240 秒超时、原生 `interrupted` 与先前另一尝试的服务端 429 分开记录；延长等待也不保证后续运行完成。
 
 [config.json](config.json) 和 [protocol.json](protocol.json) 在正式模型调用前冻结。配置摘要为 `sha256:8038bd39b27ac7d2bf13307b52a5c8b2bdc4f157c8c00f962e59364d636b2d99`。原任务、模型侧提示及分组来自 V5：2 条训练、1 条 validation、2 条不同 family 的最终测试；没有观察过这批最终测试的模型结果。预检已通过全部原生参考／负例校准及真实 Gear 准入，预检无模型请求。
 
