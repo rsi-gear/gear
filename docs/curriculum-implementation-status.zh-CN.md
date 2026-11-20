@@ -29,8 +29,9 @@ GPU 权重更新、训练节点部署、跨节点训练制品准备、论文规�
 | DiagEvo 保留题任务交接 | 已实现并接入多轮入口；未运行 Harbor 容器，GPU 列后续 | [封存与准入](training/diagevo.zh-CN.md#保留题任务封存与准入)：复算课程、保持原模型输入、继承 train 来源、排除私有内容；实际 Hitch 编译并封存任务，Gear controller 创建／准入原生 solver 请求。准备、创建及准入返回丢失时复用原制品与作业；评测和已分配本作业预算固定。4 项 Python 集成／verifier 检查及此前 50 项 controller 回归通过 |
 | DiagEvo 原生文本 harness | 真实 runner／代理／网关合同已补齐；依赖独立 Hitch 修复 | [依赖与验证](training/diagevo.zh-CN.md#原生文本-harness-合同)：复用 `model-call`，训练／评测按实际 harness 协商能力；工厂提前拒绝工具 harness。真实文本请求经过 Hitch proxy 与 Gear `ExactGateway` 后通过严格 DiagEvo 捕获检查。Hitch 本地提交 `3c03d98` 及可应用补丁已保存；未修改的 0.2.19 包不具备此能力。Gear 46 项 controller 回归、Hitch 20 项 runner／工作图回归通过，仍非真实 Harbor 执行或后续 GPU 训练验收 |
 | TRACE 配方 | 能力对比、环境生成、固定权重校准及正式搜索调用方已实现；真实模型效果待验收 | [运行与边界](../examples/curriculum-harness/TRACE.zh-CN.md)：规范字典、完整重复标签、覆盖／差异筛选；CPU Docker 实际参考与负例、完整 rollout 分组、有限修订及离线重放。新 seed 的已验证练习经混合池准入新的正式搜索 run，代码和上下文冻结，validation/test 仍用原始 retail；模型替身测试不作为迁移或收益证明。LoRA／GRPO／MoE 列后续 |
-| Agent-R / Self-Direction 配方 | 无 GPU 的修复与过程问答组合待实现；GPU 权重训练及相应加载／路由列后续 | 逐项提供实际执行入口与上游差异；已有通用算子不等于完整论文配方支持 |
-| 动态任务池、MCTS/reset、DPO/LoRA/MoE 等后端能力 | 设计第三阶段，尚未验收；GPU 训练后端不在本版范围 | 动态池及环境状态恢复按无 GPU 配方的实际需要实现；训练后端保持后续范围，不为本版先扩展节点基础设施 |
+| Agent-R 配方 | 无 GPU 的 MCTS、错误定位、实际回退与修复材料入口已实现；harness 组合及真实模型效果待验收 | [运行与差异](../examples/curriculum-harness/AGENTR.zh-CN.md)：完整失败来源重放、UCT、完成叶子奖励回传、公开前缀 critic、共同检查点重建、新后缀实际执行与原任务评分、`BuildSupervision` 语义范围、回执恢复和离线重放。CPU retail 工具为真实执行，模型为替身；不拼接旧训练捕获，`training_eligible=false`。迭代 SFT 列后续 |
+| Self-Direction 配方 | 无 GPU 的过程问答组合待实现；GPU 权重训练及相应加载／路由列后续 | 逐项提供实际执行入口与上游差异；已有通用算子不等于完整论文配方支持 |
+| 动态任务池、MCTS/reset、DPO/LoRA/MoE 等后端能力 | Agent-R 已实现具体 retail MCTS 与内存状态重建；其余按需要验收，GPU 后端不在本版范围 | 回退只适用于可丢弃的模拟器，不是外部服务 undo 或通用 checkpoint 后端；同 run 动态池及训练后端仍为后续范围 |
 | 设计第 11 节九项验收 | 按本版范围部分完成 | 每项都绑定具体测试／运行记录，训练相关条目另行验收；有效对照允许负结果，不能以窄范围示例代替整体完成 |
 
 已有探索实验在 [2026-11-19 报告](../research/curriculum-harness-2026-11-19/README.zh-CN.md)。它证明调用方闭环能运行，但五个候选超长、开发集饱和，不能充当有效数据策略对照的最终验收。

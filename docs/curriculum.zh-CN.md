@@ -99,6 +99,8 @@ PYTHONPATH=python python3 examples/training-loop/failure_curriculum_cpu.py \
 
 repair 要求独立的新捕获与成功证明，并将 replay、checkpoint reset 或终态 continuation 证据绑定原失败、实际起始状态和修复执行。输出只给新捕获上的语义 loss 范围：旧失败部分不训练、修复后缀训练。可信 builder 仍需从新的原生回执构建 token/mask；算子不拼接旧 logprob。
 
+[Agent-R-inspired retail 调用方](../examples/curriculum-harness/AGENTR.zh-CN.md)已用固定权重模型接口接入 UCT 搜索、逐步错误位置提议、实际共同检查点回退和新后缀执行。它重放原始失败来源，以原任务 verifier 验证新后缀，再调用 `BuildSupervision` 构造语义修复材料。普通推理回执没有训练捕获资格；本版不运行 SFT。正式 harness 对材料的消费和真实模型收益仍待验收。
+
 trajectory preference 要求相同任务、环境和起始条件，允许后续分叉；step preference 额外要求同一决策前缀／状态。多数票标签明确保留为 `majority_vote`，不升格为 oracle。过程问答始终标为 `synthetic_procedural`，没有原生轨迹成功证明。
 
 材料范围 `feedback_only / verified_reference / gold_answer_allowed` 由调用方通过 `allowed_protocols` 提供已获得的授权；请求字段不能自行扩权。这个参数只是可信调用方传入的约束，不是能力令牌；实际 artifact、权限、状态和 mask 由训练 builder 再验证。
