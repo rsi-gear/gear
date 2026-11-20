@@ -92,7 +92,9 @@ EXPLORER_PROMPT = (
     "final reply. Tool arguments are a JSON object encoded as arguments_json. A tool "
     "call has empty text; other kinds have empty name and arguments_json='{}'. "
     "Never invent tool results. Authenticate the customer and request confirmation "
-    "before changes. Finish only after completing the goal."
+    "before changes. Finish with a truthful final reply when the goal is complete or "
+    "you cannot make further progress. Ending the conversation does not claim that "
+    "the goal was achieved; explain any unresolved request instead of repeating it."
 )
 USER_PROMPT = (
     "Simulate the retail customer described by the private goal and profile. Speak "
