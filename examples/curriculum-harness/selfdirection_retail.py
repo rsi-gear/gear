@@ -22,7 +22,7 @@ from coevolve_retail import replay_source
 from gear.canonical import digest
 from gear.core.schema import validate_output
 from gear.curriculum import ExtractOutcomeCases, ModelInput, OutcomeRecord
-from ifeval_experiment import read_json
+from ifeval import read_json
 from model_calls import TextCalls, token_usage
 from selfdirection_data import build_lesson
 from selfdirection_lessons import MiniLM, checked_vector, lookup

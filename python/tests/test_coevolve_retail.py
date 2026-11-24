@@ -14,7 +14,7 @@ from unittest.mock import patch
 EXAMPLES = Path(__file__).resolve().parents[2] / "examples/curriculum-harness"
 sys.path.insert(0, str(EXAMPLES))
 from coevolve_retail import RetailCoEvolve, main, replay_generated  # noqa: E402
-from ifeval_experiment import read_json  # noqa: E402
+from ifeval import read_json  # noqa: E402
 from sentinel_collect import RetailCollector  # noqa: E402
 from sentinel_generate import EXPLORER_PROMPT  # noqa: E402
 from sentinel_pool import build_pool  # noqa: E402
@@ -141,38 +141,6 @@ class CoEvolveFixture(RetailSearchFixture):
             "max_steps": 8,
             "max_calls": 64,
         }
-
-    def collect(self, name, passed, **overrides):
-        config = {
-            **{
-                key: self.generation_config[key]
-                for key in (
-                    "schema_version",
-                    "partition",
-                    "family",
-                    "database",
-                    "user_id",
-                    "model",
-                    "effort",
-                )
-            },
-            "task": self.fixed_task,
-            "reference": self.reference,
-            "harness": EXPLORER_PROMPT,
-            "max_steps": 8,
-            "max_calls": 24,
-            "sample_id": name,
-            "attempt": 0,
-            **overrides,
-        }
-        steps = (
-            self.reference["steps"]
-            if passed
-            else [{"kind": "finish", "text": "I would verify your account."}]
-        )
-        return asyncio.run(
-            RetailCollector(self.root / name, TAU_SOURCE, config, SolverCalls(steps)).collect()
-        )
 
     def generate(self, *, config=None, calls=None, name="evolve", preflight=False):
         calls = calls or ExplorationCalls(self.reference["steps"])

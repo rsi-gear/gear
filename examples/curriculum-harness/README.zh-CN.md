@@ -1,76 +1,40 @@
-# 真实 LLM 的 failure→data→harness 对照
+# 用失败生成的数据改进 harness
 
-这个调用方示例保持 LLM 权重不变，更新可复用的 developer prompt。它组合 `gear.curriculum` 的案例、诊断、目标选择、生成、验证与筛选算子，执行两轮反思式提示词搜索；不宣称完整复现 GEPA。模型调用、请求恢复、任务格式转换、源数据封存和评测全部在示例中，curriculum 核心不增加执行层。
-
-四组对照通过 `Project.refine` 接入候选约束、有限修订和多个优化种子。[正式搜索示例](FORMAL.zh-CN.md)
-
-## 实验定义
-
-| 项目 | 固定设置 |
-| --- | --- |
-| 模型 | `gpt-6-astra`，reasoning effort `low`，三个实验组相同 |
-| 更新对象 | developer prompt，最多 1800 字符；不更新模型权重 |
-| 执行条件 | 每题独立会话，关闭 shell 和 web search；任何工具事件均报错 |
-| 数据与评分 | [Google 官方 IFEval](https://github.com/google-research/google-research/tree/e6890f85757dd84e27ca6df2dd30651dafad28e0/instruction_following_eval)，strict prompt accuracy 为主指标 |
-| 子集 | 每个任务至少包含两条可确定性验证的指令，排除语言识别和句子分段等类型，显式词数参数不超过 200 |
-| 切分 | seed `20261119`；8 train、8 dev、48 test；原始 prompt/source family 不交叉 |
-| 预算 | 两轮，每轮每组最多 8 条训练数据、一次候选提案、8 条开发评测；相同候选采纳规则 |
-| 生成不足 | 在更新任何组之前取三组有效数据数的共同最小值，确保每组学习样本数相同；不足两条则停止 |
-| 采纳 | 候选的开发集通过数不低于当前 harness 时采纳；最终测试不参与采纳 |
-| 无效候选 | JSON/schema/长度不合格则保留当前 harness；消耗本轮提案机会，仍执行同额开发评测，不调用模型修复 |
-| 最终测试 | baseline 与三个最终 harness 使用同一 48 题；只在优化完成后执行 |
-| 调用限制 | 最多 380 次模型请求，同时最多 4 个，单次超时 240 秒 |
-
-三组的区别：
-
-- **fixed**：每轮继续使用固定训练任务。
-- **random**：调用方均匀抽样训练约束模板，LLM 生成新主题和参考回答；生成器不接收失败反馈。
-- **failure**：LLM 诊断当前 harness 的真实失败，算子按失败频次分配生成预算，再生成针对这些失败模板的新任务。没有可用失败目标时使用显式随机回退，记录实际 conditioning。
-
-三组的优化、有效学习样本和开发评测预算相同。生成与诊断的额外成本单独记录，不能把固定数据组没有使用的生成额度计作已消耗成本。报告中的真实 token 用量来自 SDK 原生回执；恢复时缺失的用量标为未知。
-
-## 任务生成与独立验证
-
-模型生成新的主题请求、参考回答，以及调用方预先采样的 template slot。调用方根据原始 IFEval 约束构造实际任务，生成器不能改变 verifier 或来源 family。官方判分代码检查参考回答，并运行空答案与非空错误答案控制；未通过的草案不会进入 harness 优化。
-
-目标忠实度在这里指保留选中约束模板。新颖性检查是精确文本去重，不声称语义新颖性已经得到证明。该实验衡量可验证的指令遵循，不把满足格式检查等同于回答内容质量；IFEval 是公开基准，结果也不是其全量官方榜单成绩。
+这个示例固定 LLM 权重，用 `Project.refine` 和 `ReflectiveSearch` 搜索 developer prompt。它比较四种练习来源：固定训练题、无失败反馈的随机生成、针对当轮失败的生成，以及使用跨轮失败记忆的生成。每组使用相同的样本和候选预算，在相同的留出题上评价。[文本对照源码](formal_experiment.py) · [工具调用对照](SENTINEL.zh-CN.md)
 
 ## 运行
 
-在仓库根目录使用独立 Python 3.12 环境，并确保已有 Codex 登录：
+在仓库根目录构建 Gear，使用 Python 3.12 安装锁定的依赖。准备脚本核对官方 IFEval 源码和英文分词表的摘要。预检只加载基准、检查资源和 provider 握手。
 
 ```bash
+npm ci
+npm run build
 python3.12 -m venv /tmp/gear-curriculum-llm-env
-/tmp/gear-curriculum-llm-env/bin/python -m pip install \
-  -r examples/curriculum-harness/requirements.txt
-/tmp/gear-curriculum-llm-env/bin/python examples/curriculum-harness/prepare.py \
-  --output /tmp/gear-curriculum-ifeval
-PYTHONPATH=python /tmp/gear-curriculum-llm-env/bin/python \
-  examples/curriculum-harness/ifeval_experiment.py \
-  --ifeval-root /tmp/gear-curriculum-ifeval \
-  --workspace /tmp/gear-curriculum-harness --phase all
+/tmp/gear-curriculum-llm-env/bin/python -m pip install -r examples/curriculum-harness/requirements.txt
+/tmp/gear-curriculum-llm-env/bin/python examples/curriculum-harness/prepare.py --output /tmp/gear-curriculum-ifeval
+PYTHONPATH=python /tmp/gear-curriculum-llm-env/bin/python examples/curriculum-harness/formal_experiment.py \
+  --workspace /tmp/gear-formal-study --ifeval-root /tmp/gear-curriculum-ifeval --phase preflight
 ```
 
-SDK 自带与固定版本匹配的 CLI，不要求替换系统安装。`prepare.py` 只下载固定公开源码与四份纯文本英文分词表，验证提交和文件摘要；不执行下载的安装脚本。Google 源码的 Apache-2.0 notice 保留在下载文件和许可证中。
+使用已有的模型服务登录，在同一工作区把 `--phase preflight` 改成 `--phase all` 即可运行完整对照。`readiness` 只评测训练基线，`optimize` 在完成搜索后停止。首次运行可省略 `--previous-splits`。后续研究传入上一工作区的 `splits.json`，会排除以往各轮用过的 train、dev、test 来源。来源不足时停止。
 
-可先运行 `--phase baseline`，再以相同工作区运行 `--phase all`。已完成调用由请求与响应摘要校验后复用；有已提交但未知的结果时先读取原始会话完成状态，无法确认则停止，不自动重复收费请求。环境或代码变化会拒绝复用旧工作区。
+## 对照协议
 
-工作区保存 `identity.json`、`implementation.py`、`splits.json`、每次调用的 prompt/response/原生用量、生成与验证报告、每题评分、候选及采纳记录、最终 `summary.json`。临时 API 故障不计作 task failure。
+| 项目 | 约定 |
+| --- | --- |
+| 模型与候选 | 默认学生模型 `gpt-5.6-luna`，teacher 为 `gpt-6-astra`，effort 均为 `low`。每轮提案一次，生成目标 1000 字符，硬上限 1800 字符，最多修订两次。 |
+| 切分与重复 | 默认 8 道 train、16 道 dev、24 道 test。切分种子为 `20261120`，优化种子 101、202、303 各运行两轮，控制抽样和组执行顺序。原生模型解码不受这些种子控制。 |
+| 生成与验证 | teacher 与 Meta 使用 SDK 的 `output_schema`。调用方固定 IFEval 的数据、参考和验证器字段。官方 strict 验证器须接受参考答案并拒绝空回答和至少一个非空反例，反例含固定样本和按约束参数构造的样本。 |
+| 验证器身份 | 语言检测种子固定为 0。`exact-ending-v1` 用字符串边界表达指定结尾，其余约束沿用官方描述。切分前检查任务是否可校准。 |
+| 训练材料 | 每轮每组最多 6 条，按四组验证通过数的最小值取齐，少于 3 条则停止。memory 组根据当前策略测量停用或重新激活失败模式，按频次采样，并混入固定题和随机探索。 |
+| 选型与测试 | 初始训练通过率须在 25%–87.5%。模型只见训练任务及反馈，候选严格提高 dev 均分才采纳。各组、各种子、各轮都有合规提案并冻结选型后，才打开相同的 test，再复测原训练题以统计修复与回归。 |
 
-完成后可离线重新判分并导出不含原生会话 ID 的证据：
+memory 组涵盖新主题、边界难度、干扰重述和最小针对性练习。独立的 Forge 配方另有同批训练门槛、逐题候选选择和验证停滞触发条件。[Forge 配方](FORGE.zh-CN.md)
 
-```bash
-PYTHONPATH=python /tmp/gear-curriculum-llm-env/bin/python \
-  examples/curriculum-harness/export_results.py \
-  --ifeval-root /tmp/gear-curriculum-ifeval \
-  --workspace /tmp/gear-curriculum-harness \
-  --output /tmp/gear-curriculum-harness-report
-```
+隔离 worker 从封存的 Pi 资源读取 `AGENTS.md` 作为 developer prompt，拒绝修改配置、扩展或 skills 的候选。每轮使用 `nominate=False`，不发布候选。需要调整筛选范围时可指定 `--minimum-instructions` 和 `--split-seed`，并使用新工作区。[模型调用入口](formal_provider.py)
 
-导出器校验请求回执摘要、验证证据、每题结果与汇总一致性。`evidence.json` 保存最终回答、生成任务、候选、采纳记录和原生 token 用量；其中验证引用的 `record` 对应同文件 `validation` 对象内的记录。
+## 恢复与计量
 
-这类优化不需要梯度训练。[GEPA](https://github.com/gepa-ai/gepa) 使用反思和进化搜索优化文本参数，可覆盖 prompt、代码和配置；[ACE](https://github.com/ace-agent/ace) 把执行经验增量写入上下文 playbook。本示例只更新 developer prompt，没有实现工具调度、运行时代码演化或完整 GEPA/ACE 算法。
+相同工作区会核对源码、配置和切分，复用已有 run 与模型回执。调用前会保存请求及 thread/turn 身份，回执丢失时查询原会话。无法确认结果时停止。同一个调用键绑定原始输入和 schema。[模型请求与恢复](model_calls.py)
 
-## 如何解释结果
-
-对比 failure 与 fixed/random 的同题通过变化，报告净增、修复和退步数量、按题配对 bootstrap 区间以及 exact McNemar p 值。置信区间只描述这次固定 harness 在该测试子集上的差异，不覆盖优化随机性。一次优化种子的探索性对照可以发现信号，也可能显示无增益或回归；不能据此声称 failure 生成普遍优于随机生成。
+整个对照最多提交 1800 个逻辑 SDK turn，涵盖诊断、生成、搜索和评价。各组按回执分别统计实际 token，缺失值标为未知。SDK 内部 HTTP 重试不计入可观察的调用数。最终工作区包含每题结果、各优化种子的配对差异和实际用量。各优化种子共享测试题和初始基线。[结果导出与离线复核](export_formal_results.py)

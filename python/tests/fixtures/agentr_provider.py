@@ -11,8 +11,7 @@ sys.path.insert(0, str(ROOT / "python/tests"))
 
 from agentr_harness import CONTEXT_NOTE  # noqa: E402
 from fixtures.sentinel_provider import FixtureCalls as RetailCalls  # noqa: E402
-from ifeval_experiment import read_json  # noqa: E402
-from sentinel_generate import EXPLORER_PROMPT, freeze  # noqa: E402
+from sentinel_generate import EXPLORER_PROMPT  # noqa: E402
 from sentinel_provider import respond  # noqa: E402
 
 
@@ -22,16 +21,11 @@ class FixtureCalls(RetailCalls):
     async def call(self, key, prompt, harness, **settings):
         if key.startswith(("solve/", "user/")) or key == "policy-audit":
             key = "direct/" + key
+        return await super().call(key, prompt, harness, **settings)
+
+    async def make_receipt(self, key, prompt, harness, **settings):
         if not key.endswith("/meta"):
-            return await super().call(key, prompt, harness, **settings)
-        request = {"key": key, "prompt": prompt, "harness": harness, "settings": settings}
-        if self.path(key).exists():
-            saved = read_json(self.path(key))
-            if saved["request"] != request:
-                raise ValueError("Agent-R Meta fixture request changed")
-            return saved["receipt"]
-        if len(list(self.root.glob("*.json"))) >= self.max_calls:
-            raise RuntimeError("fixture logical call quota exhausted")
+            return await super().make_receipt(key, prompt, harness, **settings)
         for private in ("PRIVATE_DEV", "PRIVATE_TEST", "evaluation_criteria", "user_scenario"):
             if private in prompt:
                 raise AssertionError("private task material leaked to Agent-R Meta")
@@ -53,16 +47,7 @@ class FixtureCalls(RetailCalls):
             if prompt.startswith("Revise")
             else "oversized proposal " * 180
         }
-        receipt = {
-            "response": json.dumps(response),
-            "status": "completed",
-            "usage": None,
-            "fixture": True,
-        }
-        freeze(self.path(key), {"request": request, "receipt": receipt})
-        with (self.root / "submitted.jsonl").open("a") as stream:
-            stream.write(json.dumps(key) + "\n")
-        return receipt
+        return self.completed(response)
 
 
 class InterruptedCalls(FixtureCalls):

@@ -15,7 +15,7 @@ EXAMPLES = Path(__file__).resolve().parents[2] / "examples/curriculum-harness"
 sys.path.insert(0, str(EXAMPLES))
 from fixtures.selfdirection_calls import EmbeddingFixture, SelfDirectionCalls  # noqa: E402
 from gear.canonical import digest  # noqa: E402
-from ifeval_experiment import read_json, write_json  # noqa: E402
+from ifeval import read_json, write_json  # noqa: E402
 from selfdirection_data import public_failure  # noqa: E402
 from selfdirection_lessons import MiniLM, checked_vector, lookup  # noqa: E402
 from selfdirection_retail import RetailSelfDirection, main, replay_generated  # noqa: E402

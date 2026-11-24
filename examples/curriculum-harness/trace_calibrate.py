@@ -15,7 +15,7 @@ import gear.curriculum
 from gear.canonical import digest
 from gear.core.schema import validate_output
 from gear.curriculum import ModelInput
-from ifeval_experiment import read_json
+from ifeval import read_json
 from model_calls import token_usage
 from trace_environment import freeze
 
@@ -36,7 +36,7 @@ def implementation_identity():
         + [
             gear_root / "canonical.py",
             Path(__file__).with_name("model_calls.py"),
-            Path(__file__).with_name("ifeval_experiment.py"),
+            Path(__file__).with_name("ifeval.py"),
         ]
     )
     return {

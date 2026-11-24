@@ -139,6 +139,7 @@ jobs:
           echo "GEAR_TRACE_PYTHON_IMAGE=$TRACE_IMAGE_ID" >> "$GITHUB_ENV"
       - name: Test retail tools and formal search without model calls
         run: |
+          GEAR_TEST_FORGE_RUNTIME=1 python -m unittest discover -s python/tests -p 'test_forge_curriculum_harness.py' -k RuntimeTests -v
           python -m unittest discover -s python/tests -p 'test_sentinel*.py' -v
           python -m unittest discover -s python/tests -p 'test_coevolve*.py' -v
           python -m unittest discover -s python/tests -p 'test_trace*.py' -v

@@ -66,10 +66,11 @@ class ScopeTests(unittest.TestCase):
         self.assertEqual(token_usage([{"usage": {"total": {"total_tokens": 21}}}]), {"tokens": 21})
 
     def test_new_splits_exclude_every_previously_used_family(self):
+        self.assertEqual(study.previous_splits(None), {"train": [], "dev": [], "test": []})
+        with self.assertRaises(OSError):
+            study.previous_splits("")
         tasks = [{"id": str(i), "family": "source-" + str(i)} for i in range(12)]
-        benchmark = SimpleNamespace(
-            split=lambda seed, n, d, t: {"eligible_count": 12, "train": tasks[:n]}
-        )
+        benchmark = SimpleNamespace(eligible_tasks=lambda seed: tasks)
         previous = {
             "train": tasks[:1],
             "dev": tasks[1:2],
@@ -249,6 +250,8 @@ class RecoveryTests(unittest.TestCase):
             ):
                 with self.assertRaises(TimeoutError):
                     await calls.call("key", "prompt", "harness", model="test", output_schema=schema)
+                with patch.object(turn, "id", "different-turn"):
+                    self.assertEqual(await calls.inspect("key"), ("unknown", None))
                 receipt = await calls.call(
                     "key", "prompt", "harness", model="test", output_schema=schema
                 )
@@ -269,6 +272,12 @@ class RecoveryTests(unittest.TestCase):
                         await calls.call(
                             "key", "prompt", "harness", model="test", output_schema=schema
                         )
+                path = calls.directory("key") / "result.json"
+                saved = model_bridge.read_json(path)
+                saved["receipt"]["response"] = "changed"
+                model_bridge.write_json(path, saved)
+                with self.assertRaisesRegex(ValueError, "receipt bytes changed"):
+                    await calls.inspect("key")
             self.assertEqual(thread.turn.await_count, 1)
             self.assertEqual(thread.turn.await_args.kwargs["output_schema"], schema)
             self.assertEqual(calls.client.thread_start.await_count, 1)

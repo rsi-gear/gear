@@ -2,7 +2,7 @@
 
 `gear.training.recipes.diagevo.DiagEvoPolicy` 实现 DiagEvo 的投票筛选、频率调度和状态更新规则，`gear.training.recipes.diagevo_memory.DiagEvoDiagnostician` 提供诊断、检索筛选及节点归并组件。challenger 与 solver 的四阶段入口将奖励、已消费失败和轮末记忆绑定到原生提交。`diagevo_run.evolve` 与 `python -m gear.training diagevo` 串联双模型交替作业、新题构造、记忆反馈、跨轮预算和暂停／恢复。
 
-本版的真实 LLM 对照保持模型权重固定，运行方式见[正式 harness 示例](../../examples/curriculum-harness/FORMAL.zh-CN.md)。下文的 `diagevo run` 是独立的训练作业入口。GPU 训练和跨节点部署留待后续版本。
+本版的真实 LLM 对照保持模型权重固定，运行方式见[正式 harness 示例](../../examples/curriculum-harness/README.zh-CN.md)。下文的 `diagevo run` 是独立的训练作业入口。GPU 训练和跨节点部署留待后续版本。
 
 规则依据 [DiagEvo 第 2 节及附录 E](https://arxiv.org/html/2609.00768v2#S2)，默认构造样本数 12、优化组大小 8；绝对置信度区间为 [0.25, 0.75]，相对阈值 1.6，晋级阈值 0.7，探索系数 0.5。所有参数进入现有 `Module` 描述，可重建和替换，不在 `curriculum` 增加专用分支。
 

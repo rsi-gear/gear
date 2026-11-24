@@ -19,12 +19,14 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "examples/curriculum-harness"))
 import test_sentinel_retail as source_fixture  # noqa: E402
 from fixtures.sentinel_provider import FixtureCalls  # noqa: E402
-from ifeval_experiment import read_json  # noqa: E402
+from ifeval import read_json  # noqa: E402
+from sentinel_collect import RetailCollector  # noqa: E402
 from sentinel_generate import EXPLORER_PROMPT, RetailGenerator, freeze  # noqa: E402
 from sentinel_pool import build_pool  # noqa: E402
 from sentinel_provider import prepare_jobs, respond  # noqa: E402
 from sentinel_retail import load_backend  # noqa: E402
 from sentinel_search import search  # noqa: E402
+from test_sentinel_collect import SolverCalls  # noqa: E402
 
 TAU_SOURCE = os.environ.get("GEAR_SENTINEL_TAU2_PATH")
 
@@ -97,6 +99,38 @@ class RetailSearchFixture(unittest.TestCase):
             "target_characters": 800,
             "max_repairs": 2,
         }
+
+    def collect(self, name, passed, **overrides):
+        config = {
+            **{
+                key: self.generation_config[key]
+                for key in (
+                    "schema_version",
+                    "partition",
+                    "family",
+                    "database",
+                    "user_id",
+                    "model",
+                    "effort",
+                )
+            },
+            "task": self.fixed_task,
+            "reference": self.reference,
+            "harness": EXPLORER_PROMPT,
+            "max_steps": 8,
+            "max_calls": 24,
+            "sample_id": name,
+            "attempt": 0,
+            **overrides,
+        }
+        steps = (
+            self.reference["steps"]
+            if passed
+            else [{"kind": "finish", "text": "I would verify your account."}]
+        )
+        return asyncio.run(
+            RetailCollector(self.root / name, TAU_SOURCE, config, SolverCalls(steps)).collect()
+        )
 
     def private_bundle(self, partition, marker):
         return {

@@ -20,7 +20,7 @@ from agentr_execution import restore, rollback  # noqa: E402
 from agentr_retail import RetailAgentR, main, replay_generated  # noqa: E402
 from agentr_search import RetailTree  # noqa: E402
 from fixtures.agentr_calls import AgentRCalls  # noqa: E402
-from ifeval_experiment import read_json, write_json  # noqa: E402
+from ifeval import read_json, write_json  # noqa: E402
 from sentinel_collect import RetailCollector  # noqa: E402
 from sentinel_generate import EXPLORER_PROMPT, RetailGenerator  # noqa: E402
 from sentinel_retail import RetailSession, load_backend  # noqa: E402

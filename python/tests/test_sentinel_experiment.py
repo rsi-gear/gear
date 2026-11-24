@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from fixtures.sentinel_study import FixtureCalls, RejectingCalls
-from ifeval_experiment import read_json
+from ifeval import read_json
 from sentinel_experiment import RetailStudy, aggregate
 from sentinel_generate import RetailGenerator
 from sentinel_pool import replay_generated

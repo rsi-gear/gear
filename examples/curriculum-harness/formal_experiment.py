@@ -26,22 +26,26 @@ from gear.core import DeterministicRandom
 from gear.core.schema import validate_output
 from gear.curriculum import (
     ContrastiveDiagnoser,
+    ExtractOutcomeCases,
     GeneratePractice,
     LearningTarget,
     MasteryObservation,
     MergeFailureMemory,
+    OutcomeRecord,
     PlanPractice,
     SelectLearningTargets,
+    SelectPractice,
     ValidatePractice,
+    ValidationEvidence,
 )
 from gear.search import PromptConstraints
-from ifeval_experiment import (
+from ifeval import (
     GENERATION_PROMPT,
     INITIAL_HARNESS,
     SOURCE_COMMIT,
     Benchmark,
-    Experiment,
     json_data,
+    negative_controls,
     paired_comparison,
     read_json,
     write_json,
@@ -68,15 +72,16 @@ def freeze(path, value):
     write_json(path, value)
 
 
+def previous_splits(path):
+    return read_json(path) if path is not None else {"train": [], "dev": [], "test": []}
+
+
 def fresh_splits(benchmark, previous, config):
     # All previously used source families are excluded, including pilot train/dev.
     excluded = {
         task["id"] for split in ("train", "dev", "test") for task in previous[split]
     } | set(previous.get("excluded_ids", ()))
-    all_rows = benchmark.split(config["split_seed"], 0, 0, 0)
-    eligible = benchmark.split(config["split_seed"], all_rows["eligible_count"], 0, 0)[
-        "train"
-    ]
+    eligible = benchmark.eligible_tasks(config["split_seed"])
     remaining = [task for task in eligible if task["id"] not in excluded]
     n, d, t = (config[key] for key in ("train_count", "dev_count", "test_count"))
     if len(remaining) < n + d + t:
@@ -90,19 +95,6 @@ def fresh_splits(benchmark, previous, config):
 
 
 class Study:
-    # Reuse the pilot's audited case conversion and official-verifier validation.
-    # These methods have no model/runtime calls and remain frozen in study identity.
-    cases = Experiment.cases
-    validate = Experiment.validate
-
-    def task_from_draft(self, draft, slots):
-        task = Experiment.task_from_draft(self, draft, slots)
-        return {
-            **task,
-            "id": "practice-" + draft.draft_id.removeprefix("sha256:"),
-            "curriculum_draft_id": draft.draft_id,
-        }
-
     def __init__(self, root, benchmark, previous, config):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
@@ -120,7 +112,7 @@ class Study:
                 "formal_experiment.py",
                 "formal_provider.py",
                 "model_calls.py",
-                "ifeval_experiment.py",
+                "ifeval.py",
             )
         ]
         sources += list((here.parents[1] / "python/gear/curriculum").glob("*.py"))
@@ -152,6 +144,139 @@ class Study:
         self.calls = None
         self.memory = {arm: () for arm in ARMS}
         self.case_banks = {arm: {} for arm in ARMS}
+
+    def cases(self, rows):
+        return ExtractOutcomeCases()(
+            tuple(
+                OutcomeRecord(
+                    row["task"]["id"],
+                    row["task"]["family"],
+                    digest(row["call_key"]),
+                    0,
+                    row["policy_id"],
+                    "ifeval-strict-" + SOURCE_COMMIT,
+                    "completed",
+                    row["passed"],
+                    True,
+                    row["task"]["prompt"],
+                    json.dumps({"response": row["response"], "checks": row["checks"]}),
+                    (row["call_key"],),
+                )
+                for row in rows
+            )
+        )
+
+    def task_from_draft(self, draft, slots):
+        slot = draft.data.get("slot")
+        if type(slot) is not int or not 0 <= slot < len(slots):
+            raise ValueError("unknown generation slot")
+        source_id = slots[slot]["source_task_id"]
+        if draft.data != {"slot": slot, "source_task_id": source_id}:
+            raise ValueError("generator changed the sampled template")
+        source = self.templates[source_id]
+        if draft.family != source["family"] or draft.verifier != {
+            "source_task_id": source_id
+        }:
+            raise ValueError("generator changed source family or verifier")
+        if (
+            not isinstance(draft.reference, dict)
+            or set(draft.reference) != {"answer"}
+            or not isinstance(draft.reference["answer"], str)
+        ):
+            raise ValueError("reference answer is missing")
+        prompt = (
+            draft.instruction + "\n\n" + "\n".join(self.benchmark.descriptions(source))
+        )
+        return {
+            **source,
+            "id": "practice-" + draft.draft_id.removeprefix("sha256:"),
+            "curriculum_draft_id": draft.draft_id,
+            "prompt": prompt,
+            "source_task_id": source_id,
+            "kind": "generated",
+        }
+
+    def validate(self, drafts, slots, previous_prompts):
+        plan = self.validator.plan(drafts)
+        evidence, tasks = [], {}
+        invalid = dict(plan.structural_errors)
+        seen_prompts = set(previous_prompts)
+        seen_prompts.update(
+            task["prompt"] for split in ("dev", "test") for task in self.splits[split]
+        )
+        for draft in drafts:
+            if draft.draft_id in invalid:
+                continue
+            try:
+                task = self.task_from_draft(draft, slots)
+                reference = self.benchmark.grade(task, draft.reference["answer"])
+                # The trusted IFEval verifier must accept a correct reference and
+                # reject empty output and at least one nonempty negative control.
+                controls = negative_controls(task, draft.reference["answer"])
+                negative = [
+                    self.benchmark.grade(task, text)["passed"] for text in controls
+                ]
+                novelty = task["prompt"] not in seen_prompts
+                facts = {
+                    "environment": True,
+                    "reference": reference["passed"],
+                    "verifier_calibration": reference["passed"]
+                    and not negative[0]
+                    and not all(negative[1:]),
+                    "target_fidelity": True,
+                    "novelty": novelty,
+                }
+                tasks[draft.draft_id] = task
+                if all(facts.values()):
+                    seen_prompts.add(task["prompt"])
+                detail = {
+                    "task": task,
+                    "reference": reference,
+                    "negative_control_results": negative,
+                    "negative_controls": controls,
+                }
+            except (ValueError, TypeError, KeyError) as error:
+                facts = {name: False for name in plan.required_checks}
+                detail = {"error": str(error)}
+            proof = (
+                self.root
+                / "validation"
+                / (draft.digest.removeprefix("sha256:") + ".json")
+            )
+            record = {
+                "draft": json_data(asdict(draft)),
+                "facts": facts,
+                "detail": detail,
+                "policy_id": plan.policy_id,
+            }
+            write_json(proof, record)
+            for check, passed in facts.items():
+                evidence.append(
+                    ValidationEvidence(
+                        draft.draft_id,
+                        draft.digest,
+                        plan.policy_id,
+                        plan.validator_id,
+                        check,
+                        passed,
+                        "structural"
+                        if check in ("target_fidelity", "novelty")
+                        else "execution",
+                        ({"path": str(proof), "digest": digest(record)},),
+                    )
+                )
+        report = self.validator.assess(plan, evidence)
+        selection = SelectPractice()(
+            drafts,
+            report,
+            budget=len(slots),
+            base_pool_version=digest(sorted(previous_prompts)),
+        )
+        chosen = [tasks[item.draft_id] for item in selection.selections]
+        return chosen, {
+            "report": json_data(asdict(report)),
+            "selection": json_data(asdict(selection)),
+        }
 
     def event(self, **data):
         print(json.dumps(data, ensure_ascii=False), flush=True)
@@ -771,7 +896,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--ifeval-root", required=True)
-    parser.add_argument("--previous-splits", required=True)
+    parser.add_argument("--previous-splits", help="Exclude every source used by a previous study")
     parser.add_argument("--student", default="gpt-5.6-luna")
     parser.add_argument("--teacher", default="gpt-6-astra")
     parser.add_argument("--minimum-instructions", type=int, default=2)
@@ -806,7 +931,7 @@ def main():
     study = Study(
         root,
         Benchmark(args.ifeval_root, minimum_instructions=args.minimum_instructions),
-        read_json(args.previous_splits),
+        previous_splits(args.previous_splits),
         config,
     )
     asyncio.run(study.run(args.phase))

@@ -9,7 +9,7 @@ sys.path.insert(0, str(ROOT / "examples/curriculum-harness"))
 
 from formal_provider import build_receipt, prepare_jobs  # noqa: E402
 from gear.canonical import digest  # noqa: E402
-from ifeval_experiment import INITIAL_HARNESS, read_json, write_json  # noqa: E402
+from ifeval import INITIAL_HARNESS, read_json, write_json  # noqa: E402
 
 
 class FixtureBenchmark:
@@ -20,8 +20,8 @@ class FixtureBenchmark:
     def __init__(self, root):
         self.root = Path(root)
 
-    def split(self, seed, n, d, t):
-        rows = [
+    def eligible_tasks(self, seed):
+        return [
             {
                 "id": f"task-{i}",
                 "key": i,
@@ -32,12 +32,6 @@ class FixtureBenchmark:
             }
             for i in range(5)
         ]
-        return {
-            "eligible_count": 5,
-            "train": rows[:n],
-            "dev": rows[n : n + d],
-            "test": rows[n + d : n + d + t],
-        }
 
     def descriptions(self, task):
         if any(kwargs != {} for kwargs in task["kwargs"]) or len(

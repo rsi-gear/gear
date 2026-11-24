@@ -16,7 +16,7 @@ from pathlib import Path
 from gear.canonical import digest
 from gear.core.schema import validate_output
 from gear.curriculum import ModelInput, OutcomeRecord
-from ifeval_experiment import read_json
+from ifeval import read_json
 from model_calls import TextCalls, token_usage
 from sentinel_generate import (
     ACTION_SCHEMA,

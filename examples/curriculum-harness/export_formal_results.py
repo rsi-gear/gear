@@ -10,7 +10,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from gear.canonical import digest
-from ifeval_experiment import (
+from ifeval import (
     Benchmark,
     negative_controls,
     paired_comparison,

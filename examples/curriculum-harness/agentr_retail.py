@@ -31,7 +31,7 @@ from gear.curriculum import (
     SupervisionTrace,
     TrajectoryVerification,
 )
-from ifeval_experiment import read_json
+from ifeval import read_json
 from model_calls import TextCalls, token_usage
 from sentinel_generate import ACTION_SCHEMA, TEXT, freeze, implementation_identity, object_schema
 from sentinel_retail import load_backend, validate_task

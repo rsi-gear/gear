@@ -31,7 +31,7 @@ from gear.curriculum import (
     ValidatePractice,
     ValidationEvidence,
 )
-from ifeval_experiment import read_json
+from ifeval import read_json
 from model_calls import TextCalls, token_usage
 from sentinel_generate import object_schema
 from sentinel_retail import RetailSession, load_backend

@@ -17,7 +17,7 @@ from gear import Project
 from gear.algorithms import ReflectiveSearch
 from gear.canonical import digest
 from gear.search import PromptConstraints
-from ifeval_experiment import read_json
+from ifeval import read_json
 from sentinel_generate import freeze, implementation_identity
 from sentinel_pool import build_pool
 from sentinel_retail import RetailSession, calibrate, load_backend, validate_task

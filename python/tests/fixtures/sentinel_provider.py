@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "examples/curriculum-harness"))
 
 from gear.canonical import digest  # noqa: E402
-from ifeval_experiment import read_json  # noqa: E402
+from ifeval import read_json  # noqa: E402
 from sentinel_generate import EXPLORER_PROMPT, freeze  # noqa: E402
 from sentinel_provider import respond  # noqa: E402
 
@@ -54,6 +54,13 @@ class FixtureCalls:
             return saved["receipt"]
         if len(list(self.root.glob("*.json"))) >= self.max_calls:
             raise RuntimeError("fixture logical call quota exhausted")
+        receipt = await self.make_receipt(key, prompt, harness, **settings)
+        freeze(self.path(key), {"request": request, "receipt": receipt})
+        with (self.root / "submitted.jsonl").open("a") as stream:
+            stream.write(json.dumps(key) + "\n")
+        return receipt
+
+    async def make_receipt(self, key, prompt, harness, **settings):
         if key.endswith("/meta"):
             if "PRIVATE_DEV" in prompt or "PRIVATE_TEST" in prompt:
                 raise AssertionError("private task material leaked to Meta")
@@ -109,16 +116,16 @@ class FixtureCalls:
             }
         else:
             raise AssertionError(key)
-        receipt = {
+        return self.completed(response)
+
+    @staticmethod
+    def completed(response):
+        return {
             "response": json.dumps(response),
             "status": "completed",
             "usage": None,
             "fixture": True,
         }
-        freeze(self.path(key), {"request": request, "receipt": receipt})
-        with (self.root / "submitted.jsonl").open("a") as stream:
-            stream.write(json.dumps(key) + "\n")
-        return receipt
 
 
 if __name__ == "__main__":

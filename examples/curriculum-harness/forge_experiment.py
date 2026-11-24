@@ -18,7 +18,7 @@ import sys
 from dataclasses import asdict, replace
 from pathlib import Path
 
-from formal_experiment import ModelResponseError, Study, freeze
+from formal_experiment import ModelResponseError, Study, freeze, previous_splits
 from gear.canonical import digest
 from gear.core import DeterministicRandom
 from gear.curriculum import (
@@ -31,7 +31,7 @@ from gear.curriculum import (
     SelectPractice,
     ValidationEvidence,
 )
-from ifeval_experiment import ALLOWED, INITIAL_HARNESS, Benchmark, read_json
+from ifeval import ALLOWED, INITIAL_HARNESS, Benchmark, read_json
 from model_calls import TextCalls, token_usage
 
 MUTATIONS = (
@@ -711,7 +711,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--ifeval-root", required=True)
-    parser.add_argument("--previous-splits", required=True)
+    parser.add_argument("--previous-splits", help="Exclude every source used by a previous study")
     parser.add_argument("--student", default="gpt-5.6-luna")
     parser.add_argument("--teacher", default="gpt-6-astra")
     parser.add_argument("--seed", type=int, default=101)
@@ -747,7 +747,7 @@ def main():
     study = ForgeStudy(
         root,
         Benchmark(args.ifeval_root, minimum_instructions=1),
-        read_json(args.previous_splits),
+        previous_splits(args.previous_splits),
         config,
     )
     asyncio.run(study.run(args.phase))

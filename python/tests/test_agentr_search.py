@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT / "examples/curriculum-harness"))
 from agentr_harness import CONTEXT_NOTE, prepare_context, usage  # noqa: E402
 from fixtures.agentr_calls import AgentRCalls  # noqa: E402
 from fixtures.agentr_provider import FixtureCalls, InterruptedCalls  # noqa: E402
-from ifeval_experiment import read_json, write_json  # noqa: E402
+from ifeval import read_json, write_json  # noqa: E402
 from sentinel_collect import RetailCollector  # noqa: E402
 from sentinel_pool import build_pool  # noqa: E402
 from sentinel_provider import prepare_jobs, respond  # noqa: E402

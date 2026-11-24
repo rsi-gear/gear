@@ -19,7 +19,7 @@ from pathlib import Path
 
 from gear.canonical import digest
 from gear.core.schema import validate_output
-from ifeval_experiment import Benchmark, read_json, write_json
+from ifeval import Benchmark, read_json, write_json
 from model_calls import TextCalls, token_usage
 
 
@@ -32,7 +32,7 @@ def implementation_identity():
                 for name in (
                     "formal_provider.py",
                     "model_calls.py",
-                    "ifeval_experiment.py",
+                    "ifeval.py",
                 )
             },
             "packages": {

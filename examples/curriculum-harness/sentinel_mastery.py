@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 from gear.canonical import digest
 from gear.curriculum import ContrastiveDiagnoser, MergeFailureMemory
-from ifeval_experiment import read_json
+from ifeval import read_json
 from model_calls import TextCalls, token_usage
 from sentinel_collect import RetailCollector
 from sentinel_generate import (

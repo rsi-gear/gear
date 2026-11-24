@@ -19,7 +19,7 @@ from types import SimpleNamespace
 from formal_provider import prepare_jobs as prepare_meta
 from gear.canonical import digest
 from gear.core.schema import validate_output
-from ifeval_experiment import read_json
+from ifeval import read_json
 from model_calls import TextCalls, token_usage
 from sentinel_collect import RetailCollector
 from sentinel_generate import freeze, implementation_identity

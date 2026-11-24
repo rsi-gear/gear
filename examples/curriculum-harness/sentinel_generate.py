@@ -34,7 +34,7 @@ from gear.curriculum import (
     ValidatePractice,
     ValidationEvidence,
 )
-from ifeval_experiment import read_json, write_json
+from ifeval import read_json, write_json
 from model_calls import TextCalls, token_usage
 from sentinel_retail import RetailSession, build_task, calibrate, load_backend, replay_reference
 
@@ -456,7 +456,7 @@ def implementation_identity():
         + [
             gear_root / "canonical.py",
             Path(__file__).with_name("model_calls.py"),
-            Path(__file__).with_name("ifeval_experiment.py"),
+            Path(__file__).with_name("ifeval.py"),
         ]
     )
     return {

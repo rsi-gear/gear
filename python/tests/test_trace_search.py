@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "examples/curriculum-harness"))
 from fixtures.trace_calls import TraceCalls  # noqa: E402
 from fixtures.trace_provider import FixtureCalls, InterruptedCalls  # noqa: E402
-from ifeval_experiment import read_json  # noqa: E402
+from ifeval import read_json  # noqa: E402
 from sentinel_collect import RetailCollector  # noqa: E402
 from sentinel_pool import build_pool  # noqa: E402
 from sentinel_provider import prepare_jobs, respond  # noqa: E402

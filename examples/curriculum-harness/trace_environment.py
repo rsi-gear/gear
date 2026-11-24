@@ -18,7 +18,7 @@ from pathlib import Path
 
 from gear.canonical import digest
 from gear.core.schema import validate_output, validate_schema
-from ifeval_experiment import read_json, write_json
+from ifeval import read_json, write_json
 
 
 def freeze(path, value):

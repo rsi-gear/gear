@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 
 from gear.canonical import digest
-from ifeval_experiment import read_json
+from ifeval import read_json
 from trace_calibrate import verify_environment
 from trace_environment import TraceEnvironment, freeze
 

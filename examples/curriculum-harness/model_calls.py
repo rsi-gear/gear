@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 from gear.canonical import digest
-from ifeval_experiment import read_json, write_json
+from ifeval import read_json, write_json
 
 # This bridge also serves caller-executed tool environments. The IFEval-only
 # instruction "Do not use tools" ambiguously prohibited their JSON actions.

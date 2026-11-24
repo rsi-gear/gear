@@ -13,7 +13,7 @@ EXAMPLES = Path(__file__).resolve().parents[2] / "examples/curriculum-harness"
 sys.path.insert(0, str(EXAMPLES))
 from fixtures.trace_calls import TraceCalls  # noqa: E402
 from fixtures.trace_game import TOOLS, source  # noqa: E402
-from ifeval_experiment import read_json  # noqa: E402
+from ifeval import read_json  # noqa: E402
 from trace_calibrate import TraceCollector, calibrate, calibration_parameters, verify_environment  # noqa: E402
 from trace_environment import TraceEnvironment  # noqa: E402
 

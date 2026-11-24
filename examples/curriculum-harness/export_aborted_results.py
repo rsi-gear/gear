@@ -9,7 +9,7 @@ from pathlib import Path
 from export_formal_results import snapshot_sources
 from forge_experiment import sealed_prompt
 from gear.canonical import digest
-from ifeval_experiment import INITIAL_HARNESS, Benchmark, read_json, write_json
+from ifeval import INITIAL_HARNESS, Benchmark, read_json, write_json
 
 
 def export(workspace, benchmark, output):

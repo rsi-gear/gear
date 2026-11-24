@@ -29,7 +29,7 @@ from gear.curriculum import (
     ValidatePractice,
     ValidationEvidence,
 )
-from ifeval_experiment import read_json
+from ifeval import read_json
 from model_calls import TextCalls, token_usage
 from sentinel_collect import RetailCollector
 from sentinel_generate import (

@@ -18,7 +18,7 @@ from pathlib import Path
 from gear.canonical import digest
 from gear.core import DeterministicRandom
 from gear.search import PromptConstraints
-from ifeval_experiment import read_json
+from ifeval import read_json
 from model_calls import TextCalls, token_usage
 from sentinel_collect import RetailCollector
 from sentinel_generate import RetailGenerator, freeze, implementation_identity

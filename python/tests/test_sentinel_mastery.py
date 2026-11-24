@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from fixtures.sentinel_provider import FixtureCalls as ProbeCalls
 from fixtures.sentinel_study import FixtureCalls as SourceCalls
-from ifeval_experiment import read_json
+from ifeval import read_json
 from sentinel_collect import RetailCollector
 from sentinel_generate import EXPLORER_PROMPT, RetailGenerator
 from sentinel_mastery import RetailMastery

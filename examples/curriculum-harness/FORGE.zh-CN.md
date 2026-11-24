@@ -34,14 +34,13 @@
 
 ## 运行
 
-先按 [基础示例](README.zh-CN.md) 准备固定依赖和官方 IFEval，再构建 Gear。`--previous-splits` 继承前序所有排除来源，切分改动必须使用新目录：
+先按 [基础示例](README.zh-CN.md) 准备固定依赖和官方 IFEval，再构建 Gear。首次运行可省略 `--previous-splits`。复用预检数据开展新研究时，可传入上一工作区的 `splits.json` 排除用过的来源。切分改动须使用新目录。
 
 ```bash
 PYTHONPATH=python /tmp/gear-curriculum-llm-env/bin/python \
   examples/curriculum-harness/forge_experiment.py \
   --workspace /tmp/gear-forge-study \
   --ifeval-root /tmp/gear-curriculum-ifeval \
-  --previous-splits /tmp/previous-study/splits.json \
   --steps 6 --patience 2 --batch-size 4 \
   --synthesis-attempts 8 --max-synthesis-events 2 --max-calls 600 \
   --phase all

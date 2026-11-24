@@ -12,7 +12,7 @@ from pathlib import Path
 from agentr_execution import conversation
 from agentr_retail import replay_generated
 from gear.canonical import digest
-from ifeval_experiment import read_json
+from ifeval import read_json
 from sentinel_generate import freeze
 from sentinel_retail import RetailSession, load_backend, validate_task
 

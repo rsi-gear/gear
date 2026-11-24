@@ -29,9 +29,7 @@ PYTHONPATH=python python3 examples/training-loop/failure_curriculum_cpu.py \
 
 `curriculum` 不要求训练模型权重。调用方也可以把新练习用于评估和修改 prompt、工具规则或经验库，再用固定留出集选择 harness。数据生成与 harness 搜索是两个可组合的环节。
 
-[真实 LLM 示例](../examples/curriculum-harness/README.zh-CN.md)固定模型权重，使用官方 IFEval strict 验证器执行 failure → 新任务 → 回答与反馈 → developer prompt 候选 → 开发集采纳 → 固定测试集评测。fixed、random、failure 三组有相同的有效学习样本、候选和开发评测预算；生成和诊断成本另计。模型调用、收费请求恢复、验证执行和格式转换均由示例调用方处理，没有增加 adapters 或 curriculum 执行层。它是两轮反思式提示词搜索，不是完整 GEPA 复现。
-
-正式四组对照通过 `Project.refine` 和 `ReflectiveSearch` 搜索候选，在独立 worker 中执行候选约束、选型和恢复。[运行说明](../examples/curriculum-harness/FORMAL.zh-CN.md)
+文本对照固定模型权重，比较固定数据、随机生成、当轮失败生成和跨轮失败记忆四种策略。每组在相同有效样本与候选预算下使用 `Project.refine` 和 `ReflectiveSearch` 搜索 developer prompt，在独立开发集选型后，用相同的 IFEval strict 测试任务比较结果。调用方负责模型调用、收费请求恢复、验证执行和格式转换。[运行文本对照](../examples/curriculum-harness/README.zh-CN.md)
 
 ## 算子与合同
 

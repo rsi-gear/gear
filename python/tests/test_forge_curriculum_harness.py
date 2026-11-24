@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT / "examples/curriculum-harness"))
 from fixtures.forge_provider import FixtureBenchmark  # noqa: E402
 from forge_experiment import EpochSampler, ForgeStudy, front_weights, select_parent  # noqa: E402
 from formal_experiment import freeze  # noqa: E402
-from ifeval_experiment import INITIAL_HARNESS, read_json  # noqa: E402
+from ifeval import INITIAL_HARNESS, read_json  # noqa: E402
 
 
 def config(**overrides):

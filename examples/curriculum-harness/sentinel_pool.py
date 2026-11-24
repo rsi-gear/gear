@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 from gear.canonical import digest
 from gear.core import DeterministicRandom
-from ifeval_experiment import read_json
+from ifeval import read_json
 from sentinel_generate import RetailGenerator, freeze, implementation_identity
 from sentinel_retail import RetailSession, calibrate, load_backend, validate_task
 
