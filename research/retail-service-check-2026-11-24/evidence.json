@@ -1,0 +1,59 @@
+{
+  "protocol": {
+    "purpose": "One service-availability request after user-authorized retry on 2026-11-24; not an effectiveness experiment",
+    "model": "gpt-6-astra",
+    "effort": "low",
+    "maximum_logical_turns": 1,
+    "timeout_seconds": 600,
+    "source_commit": "ff7724495edc61430122837af7cfb60dd4868353",
+    "new_gpu_training": false
+  },
+  "pending": {
+    "request": {
+      "key": "availability",
+      "model": "gpt-6-astra",
+      "effort": "low",
+      "prompt": "Return exactly OK",
+      "harness": "Follow the instruction.",
+      "base_instructions": "Follow the developer instructions and return only the requested text or structured output. Do not invoke the model runtime's native tools or access files. When the developer requests a structured tool action, emit that action in your response; the caller executes supported actions and supplies the resulting observations. Do not invent observations.",
+      "tools": false,
+      "sdk": "0.159.3"
+    },
+    "thread_id": "<redacted>",
+    "turn_id": "<redacted>"
+  },
+  "receipt": {
+    "status": "completed",
+    "response": "OK",
+    "usage": {
+      "last": {
+        "cache_write_input_tokens": 0,
+        "cached_input_tokens": 0,
+        "input_tokens": 9132,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 9137
+      },
+      "model_context_window": 258400,
+      "total": {
+        "cache_write_input_tokens": 0,
+        "cached_input_tokens": 0,
+        "input_tokens": 9132,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 9137
+      }
+    },
+    "thread_id": "<redacted>",
+    "turn_id": "<redacted>",
+    "seconds": 32.44877599994652,
+    "item_types": [
+      "userMessage",
+      "agentMessage"
+    ]
+  },
+  "submitted_logical_turns": 1,
+  "known_native_tokens": 9137,
+  "new_submissions_during_export": 0,
+  "original_receipt_and_ids_checked_before_redaction": true
+}

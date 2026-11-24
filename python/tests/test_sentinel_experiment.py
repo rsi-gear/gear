@@ -211,6 +211,7 @@ class StudyRuntimeTests(RetailSearchFixture):
                 final_reply_on_limit=True,
                 generator_model="explicit-generator",
                 call_timeout_seconds=600,
+                call_delay_seconds=10,
             )
             result = asyncio.run(study.run())
             with self.assertRaisesRegex(ValueError, "changed"):
@@ -219,6 +220,15 @@ class StudyRuntimeTests(RetailSearchFixture):
                     final_reply_on_limit=True,
                     generator_model="explicit-generator",
                     call_timeout_seconds=601,
+                    call_delay_seconds=10,
+                )
+            with self.assertRaisesRegex(ValueError, "changed"):
+                self.study(
+                    max_steps=4,
+                    final_reply_on_limit=True,
+                    generator_model="explicit-generator",
+                    call_timeout_seconds=600,
+                    call_delay_seconds=11,
                 )
         self.assertTrue(result["comparable"])
         self.assertEqual(result["mean_pass_rate"]["baseline"], 0)
@@ -249,10 +259,14 @@ class StudyRuntimeTests(RetailSearchFixture):
         ]
         self.assertTrue(stage_inputs)
         self.assertTrue(all(row["call_timeout_seconds"] == 600 for row in stage_inputs))
+        self.assertTrue(all(row["call_delay_seconds"] == 10 for row in stage_inputs))
         actual_calls = list(study.root.glob("**/calls/*.json"))
         self.assertTrue(actual_calls)
         self.assertTrue(
             all(read_json(path)["request"]["timeout_seconds"] == 600 for path in actual_calls)
+        )
+        self.assertTrue(
+            all(read_json(path)["request"]["delay_seconds"] == 10 for path in actual_calls)
         )
         meta_calls = [
             path for path in actual_calls if read_json(path)["request"]["key"].endswith("/meta")
@@ -262,6 +276,16 @@ class StudyRuntimeTests(RetailSearchFixture):
         self.assertTrue(profiles)
         for path in profiles:
             self.assertEqual(read_json(path)["configuration"]["call_timeout_seconds"], 600)
+            self.assertEqual(read_json(path)["configuration"]["call_delay_seconds"], 10)
+
+    def test_submission_delay_rejects_invalid_values_before_sealing_input(self):
+        for value in (None, True, -1, 61, 10.0, "10"):
+            with (
+                self.subTest(value=value),
+                self.assertRaisesRegex(ValueError, "call_delay_seconds"),
+            ):
+                self.study(call_delay_seconds=value)
+            self.assertFalse((self.root / "study/input.json").exists())
 
     def test_wait_budget_rejects_invalid_values_before_study_input_is_sealed(self):
         for value in (None, True, 0, -1, 1801, 240.0, "240"):

@@ -128,6 +128,8 @@ PYTHONPATH=/path/to/gear/python \
 
 正式搜索可选 `call_timeout_seconds`，为 1–1800 的整数，省略时仍使用 240 秒。它控制每次原生模型响应的等待，目标与 Meta 使用同一设置；配置进入搜索身份、provider profile 和采集记录。provider 整个操作仍有独立的 30 分钟进程时限，因此该字段不保证操作总时长，也不是取消确认或自动重试设置。超时后保留原请求并核对原生状态，不能把没有完成回执的请求计为任务失败。
 
+`call_delay_seconds` 可将每次新模型提交前的等待设为 0–60 秒的整数，默认 0；第一次新提交也等待，读取缓存和核对未知 turn 不额外等待。一个调用实例串行安排提交，模型回复仍受原有并发限制；三组 study 本身串行执行，因此不同任务、生成、target／Meta 和最终测试也都会在新请求前等待。设置进入 study／search 配置、provider profile 和采集／生成身份，重放保留原设置。它不提供跨独立实验的全局限流，也不约束 SDK 内部 HTTP 重试；在等待阶段取消不会预留或提交模型请求。
+
 ## 测量与更新 failure memory
 
 [sentinel_mastery.py](sentinel_mastery.py) 将当前 harness 的实际执行记录转换成已有 `MasteryObservation`，交给 `MergeFailureMemory` 更新记忆。它测量的是**原始支持任务上的回归结果**，不等于整个失败机制已被普遍掌握，也不把一次失败当作新的语义诊断。探针使用训练任务，不消耗 validation／test；多个模式共享同一任务时只执行一份计划中的样本。
@@ -180,6 +182,7 @@ PYTHONPATH=python /tmp/gear-sentinel-env/bin/python \
 | `max_steps`, `calls_per_task`, `calls_per_generation`, `calls_per_search` | 每次执行步数，每个采集／评测任务、每次生成、每轮正式搜索的逻辑调用配额；不宣称 token／美元硬上限 |
 | `final_reply_on_limit`（可选） | 默认 `false`；同一设置用于所有组的源采集、生成、搜索与最终评测，结束调用计入对应既有配额 |
 | `call_timeout_seconds`（可选） | 默认 240，1–1800 的整数；统一传入源采集、生成、正式 target／Meta 和最终测试的调用等待，并绑定到运行身份；不改变逻辑调用配额或超时后的原请求核对规则 |
+| `call_delay_seconds`（可选） | 默认 0，0–60 的整数；统一设置每次新提交前的等待，缓存与原请求核对不产生新提交；正式操作的总时限仍为 30 分钟 |
 | `fixed_count`, `generated_count`, `generation_attempts` | 固定份额、生成份额、每组每轮预先限定的生成尝试数；fixed 原始池至少满足两份额之和 |
 | `random_targets` | 不依赖失败观测的已授权训练领域目标列表 |
 | `max_characters`, `target_characters`, `max_repairs` | 与正式搜索相同的候选约束 |

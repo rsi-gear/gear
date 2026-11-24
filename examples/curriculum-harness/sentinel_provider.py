@@ -167,6 +167,10 @@ async def respond(message, *, calls_factory=TextCalls):
         or not 1 <= config["call_timeout_seconds"] <= 1800
     ):
         raise ValueError("call_timeout_seconds must be an integer from 1 to 1800")
+    if "call_delay_seconds" in config and (
+        type(config["call_delay_seconds"]) is not int or not 0 <= config["call_delay_seconds"] <= 60
+    ):
+        raise ValueError("call_delay_seconds must be an integer from 0 to 60")
     identity = provider_identity(config, calls_factory)
     action = message["action"]
     if action == "describe":
@@ -226,6 +230,11 @@ async def respond(message, *, calls_factory=TextCalls):
                 if "call_timeout_seconds" in config
                 else {}
             ),
+            **(
+                {"delay_seconds": config["call_delay_seconds"]}
+                if "call_delay_seconds" in config
+                else {}
+            ),
         ) as calls:
 
             async def model_call(key, prompt, harness, **settings):
@@ -277,6 +286,7 @@ async def respond(message, *, calls_factory=TextCalls):
                             + int(config.get("final_reply_on_limit", False)),
                             identity=getattr(calls, "identity", "TextCalls"),
                             timeout_seconds=getattr(calls, "timeout_seconds", None),
+                            delay_seconds=getattr(calls, "delay_seconds", 0),
                         )
                         bundle = job["bundle"]
                         if bundle.get("kind") == "trace":

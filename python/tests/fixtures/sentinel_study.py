@@ -21,6 +21,7 @@ class FixtureCalls(ProviderCalls):
             "harness": harness,
             "settings": settings,
             "timeout_seconds": self.timeout_seconds,
+            "delay_seconds": self.delay_seconds,
         }
         if self.path(key).exists():
             saved = read_json(self.path(key))

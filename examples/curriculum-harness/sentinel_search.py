@@ -55,7 +55,13 @@ async def _search(root, source_root, config, provider_script, preflight):
         "max_repairs",
     }
     if (
-        set(config) - {"agentr_workspaces", "final_reply_on_limit", "call_timeout_seconds"}
+        set(config)
+        - {
+            "agentr_workspaces",
+            "final_reply_on_limit",
+            "call_timeout_seconds",
+            "call_delay_seconds",
+        }
         != expected
         or type(config["schema_version"]) is not int
         or config["schema_version"] != 1
@@ -73,6 +79,10 @@ async def _search(root, source_root, config, provider_script, preflight):
         or not 1 <= config["call_timeout_seconds"] <= 1800
     ):
         raise ValueError("call_timeout_seconds must be an integer from 1 to 1800")
+    if "call_delay_seconds" in config and (
+        type(config["call_delay_seconds"]) is not int or not 0 <= config["call_delay_seconds"] <= 60
+    ):
+        raise ValueError("call_delay_seconds must be an integer from 0 to 60")
     if (
         type(config["max_steps"]) is not int
         or not 1 <= config["max_steps"] <= 64
@@ -282,6 +292,11 @@ async def _search(root, source_root, config, provider_script, preflight):
                 **(
                     {"call_timeout_seconds": config["call_timeout_seconds"]}
                     if "call_timeout_seconds" in config
+                    else {}
+                ),
+                **(
+                    {"call_delay_seconds": config["call_delay_seconds"]}
+                    if "call_delay_seconds" in config
                     else {}
                 ),
                 **(

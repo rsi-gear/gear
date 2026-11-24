@@ -88,6 +88,89 @@ class ScopeTests(unittest.TestCase):
 
 
 class RecoveryTests(unittest.TestCase):
+    def test_delayed_concurrent_submissions_are_spaced_and_cache_is_immediate(self):
+        async def run(root):
+            calls = TextCalls(root, concurrency=2, delay_seconds=10)
+            clock, starts = [0], []
+            original_sleep = asyncio.sleep
+
+            async def sleep(seconds):
+                clock[0] += seconds
+                await original_sleep(0)
+
+            async def start(**kwargs):
+                index = len(starts)
+                starts.append(clock[0])
+                result = SimpleNamespace(
+                    id=f"turn-{index}",
+                    status=SimpleNamespace(value="completed"),
+                    final_response="OK",
+                    usage=None,
+                    items=[SimpleNamespace(type="agentMessage")],
+                )
+                return SimpleNamespace(
+                    id=f"thread-{index}",
+                    turn=AsyncMock(
+                        return_value=SimpleNamespace(
+                            id=result.id, run=AsyncMock(return_value=result)
+                        )
+                    ),
+                )
+
+            calls.client = SimpleNamespace(thread_start=AsyncMock(side_effect=start))
+            with (
+                self.sdk_patch(),
+                patch("model_calls.importlib.metadata.version", return_value="test"),
+                patch("model_calls.asyncio.sleep", side_effect=sleep) as delay,
+            ):
+                results = await asyncio.gather(
+                    calls.call("a", "prompt", "harness", model="test"),
+                    calls.call("b", "prompt", "harness", model="test"),
+                )
+                self.assertEqual(starts, [10, 20])
+                self.assertEqual(
+                    await calls.call("a", "prompt", "harness", model="test"), results[0]
+                )
+                self.assertEqual(delay.call_count, 2)
+                self.assertEqual(calls.client.thread_start.await_count, 2)
+
+        with tempfile.TemporaryDirectory() as root:
+            asyncio.run(run(root))
+
+    def test_cancellation_during_delay_does_not_reserve_or_submit_a_request(self):
+        async def run(root):
+            calls = TextCalls(root, delay_seconds=10)
+            calls.client = SimpleNamespace(thread_start=AsyncMock())
+            waiting = asyncio.Event()
+
+            async def sleep(seconds):
+                waiting.set()
+                await asyncio.Event().wait()
+
+            with (
+                self.sdk_patch(),
+                patch("model_calls.importlib.metadata.version", return_value="test"),
+                patch("model_calls.asyncio.sleep", side_effect=sleep),
+            ):
+                task = asyncio.create_task(calls.call("key", "prompt", "harness", model="test"))
+                await waiting.wait()
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+            self.assertFalse(list(Path(root).glob("*/pending.json")))
+            calls.client.thread_start.assert_not_awaited()
+
+        with tempfile.TemporaryDirectory() as root:
+            asyncio.run(run(root))
+
+    def test_delay_rejects_invalid_values_without_creating_a_call_store(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = Path(root) / "calls"
+            for value in (None, True, -1, 61, 10.0, "10"):
+                with self.subTest(value=value), self.assertRaisesRegex(ValueError, "delay_seconds"):
+                    TextCalls(store, delay_seconds=value)
+            self.assertFalse(store.exists())
+
     def test_bad_model_json_is_distinct_from_receipt_integrity_failure(self):
         async def run():
             caller = object.__new__(study.Study)

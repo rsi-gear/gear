@@ -103,6 +103,7 @@ def saved_calls(root, identity):
         max_calls=identity["config"]["max_calls"],
         identity=identity["model_calls_identity"],
         timeout_seconds=identity["call_timeout_seconds"],
+        delay_seconds=identity.get("call_delay_seconds", 0),
     )
     if identity["call_store"] is not None:
         calls.root = Path(identity["call_store"])

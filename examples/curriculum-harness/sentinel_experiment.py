@@ -54,7 +54,8 @@ def validate_config(config):
         "max_repairs",
     }
     if (
-        set(config) - {"generator_model", "final_reply_on_limit", "call_timeout_seconds"}
+        set(config)
+        - {"generator_model", "final_reply_on_limit", "call_timeout_seconds", "call_delay_seconds"}
         != required
         or type(config["schema_version"]) is not int
         or config["schema_version"] != 1
@@ -72,6 +73,10 @@ def validate_config(config):
         or not 1 <= config["call_timeout_seconds"] <= 1800
     ):
         raise ValueError("call_timeout_seconds must be an integer from 1 to 1800")
+    if "call_delay_seconds" in config and (
+        type(config["call_delay_seconds"]) is not int or not 0 <= config["call_delay_seconds"] <= 60
+    ):
+        raise ValueError("call_delay_seconds must be an integer from 0 to 60")
     if (
         not isinstance(config.get("generator_model", config["model"]), str)
         or not config.get("generator_model", config["model"]).strip()
@@ -223,6 +228,9 @@ class RetailStudy:
                 if "call_timeout_seconds" in c
                 else {}
             ),
+            **(
+                {"call_delay_seconds": c["call_delay_seconds"]} if "call_delay_seconds" in c else {}
+            ),
         }
 
     async def collect(self, seed, round_index, bundle, harness):
@@ -263,6 +271,7 @@ class RetailStudy:
                 if "call_timeout_seconds" in c
                 else {}
             ),
+            **({"delay_seconds": c["call_delay_seconds"]} if "call_delay_seconds" in c else {}),
         ) as calls:
             result = await RetailCollector(root, self.source_root, config, calls).collect()
         return {
@@ -300,6 +309,7 @@ class RetailStudy:
                 if "call_timeout_seconds" in c
                 else {}
             ),
+            **({"delay_seconds": c["call_delay_seconds"]} if "call_delay_seconds" in c else {}),
         ) as calls:
             result = await RetailGenerator(root, self.source_root, config, calls).generate()
         return {

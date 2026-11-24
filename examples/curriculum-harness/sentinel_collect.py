@@ -104,6 +104,7 @@ class RetailCollector:
             "model_calls_identity": getattr(calls, "identity", "TextCalls"),
             "call_store": str(Path(calls.root).resolve()) if hasattr(calls, "root") else None,
             "call_timeout_seconds": getattr(calls, "timeout_seconds", None),
+            "call_delay_seconds": getattr(calls, "delay_seconds", 0),
         }
         self.policy_id = digest(
             {

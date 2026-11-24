@@ -29,12 +29,18 @@ BASE_INSTRUCTIONS = (
 
 
 class TextCalls:
-    def __init__(self, root, *, max_calls=1600, concurrency=4, timeout_seconds=240):
+    def __init__(
+        self, root, *, max_calls=1600, concurrency=4, timeout_seconds=240, delay_seconds=0
+    ):
+        if type(delay_seconds) is not int or not 0 <= delay_seconds <= 60:
+            raise ValueError("delay_seconds must be an integer from 0 to 60")
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.max_calls = max_calls
         self.timeout_seconds = timeout_seconds
+        self.delay_seconds = delay_seconds
         self.semaphore = asyncio.Semaphore(concurrency)
+        self.submission_lock = asyncio.Lock()
         self.client = None
 
     async def __aenter__(self):
@@ -160,29 +166,35 @@ class TextCalls:
                     raise RuntimeError(
                         "unknown model result; reconcile without resubmitting: " + key
                     )
-                with (self.root / ".quota.lock").open("a") as quota:
-                    fcntl.flock(quota, fcntl.LOCK_EX)
-                    if len(list(self.root.glob("*/pending.json"))) >= self.max_calls:
-                        raise RuntimeError("predeclared logical model-call quota exhausted")
-                    write_json(pending, {"request": request})
-                thread = await self.client.thread_start(
-                    cwd=str(directory),
-                    model=model,
-                    sandbox=Sandbox.read_only,
-                    approval_mode=ApprovalMode.deny_all,
-                    base_instructions=BASE_INSTRUCTIONS,
-                    developer_instructions=harness,
-                )
-                write_json(pending, {"request": request, "thread_id": thread.id})
-                handle = await thread.turn(
-                    prompt,
-                    effort=effort,
-                    **({"output_schema": output_schema} if output_schema is not None else {}),
-                )
-                write_json(
-                    pending,
-                    {"request": request, "thread_id": thread.id, "turn_id": handle.id},
-                )
+                # Delay before reserving intent, including the first new turn.
+                # Cancellation during this wait has no ambiguous remote submission.
+                # One instance serializes admissions even when responses run concurrently.
+                async with self.submission_lock:
+                    if self.delay_seconds:
+                        await asyncio.sleep(self.delay_seconds)
+                    with (self.root / ".quota.lock").open("a") as quota:
+                        fcntl.flock(quota, fcntl.LOCK_EX)
+                        if len(list(self.root.glob("*/pending.json"))) >= self.max_calls:
+                            raise RuntimeError("predeclared logical model-call quota exhausted")
+                        write_json(pending, {"request": request})
+                    thread = await self.client.thread_start(
+                        cwd=str(directory),
+                        model=model,
+                        sandbox=Sandbox.read_only,
+                        approval_mode=ApprovalMode.deny_all,
+                        base_instructions=BASE_INSTRUCTIONS,
+                        developer_instructions=harness,
+                    )
+                    write_json(pending, {"request": request, "thread_id": thread.id})
+                    handle = await thread.turn(
+                        prompt,
+                        effort=effort,
+                        **({"output_schema": output_schema} if output_schema is not None else {}),
+                    )
+                    write_json(
+                        pending,
+                        {"request": request, "thread_id": thread.id, "turn_id": handle.id},
+                    )
                 started = time.monotonic()
                 result = await asyncio.wait_for(handle.run(), self.timeout_seconds)
                 receipt = {

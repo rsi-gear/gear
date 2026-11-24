@@ -107,6 +107,7 @@ class RetailMastery:
             "model_calls_identity": getattr(calls, "identity", "TextCalls"),
             "call_store": str(Path(calls.root).resolve()) if hasattr(calls, "root") else None,
             "call_timeout_seconds": getattr(calls, "timeout_seconds", None),
+            "call_delay_seconds": getattr(calls, "delay_seconds", 0),
         }
         freeze(self.root / "input.json", self.identity)
         self.schedule = []
@@ -137,6 +138,7 @@ class RetailMastery:
                     max_calls=2 * config["max_steps"] + 1,
                     identity=getattr(calls, "identity", "TextCalls"),
                     timeout_seconds=getattr(calls, "timeout_seconds", None),
+                    delay_seconds=getattr(calls, "delay_seconds", 0),
                 )
                 if hasattr(calls, "root"):
                     scoped.root = calls.root
