@@ -1,0 +1,19 @@
+{
+  "source_commit": "70895c019a79726a65f1d14ccc7af0adb1f3a993",
+  "config_digest": "sha256:a538094ceeffe2cef85b1661915a0149420b62eb969c0f404ac29857cdbe50dd",
+  "evidence_sha256": "5434010a03794c52d6904f10cffc42b8f753f0cf45bd6de27173215b3eb28fce",
+  "accounting": {
+    "submitted_turns": 72,
+    "completed_turns": 71,
+    "failed_turns": 1,
+    "known_completed_native_tokens": 2064712,
+    "all_attempt_tokens": null,
+    "weight_training_steps": 0,
+    "availability_calls_separate": 1,
+    "availability_native_tokens_separate": 9137
+  },
+  "completed_study": false,
+  "redactions": [
+    "SDK thread_id and turn_id; original receipt digests and ID bindings checked before removal"
+  ]
+}
