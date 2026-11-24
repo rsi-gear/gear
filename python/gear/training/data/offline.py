@@ -334,6 +334,130 @@ def read_dataset(store, request):
     return data
 
 
+def _seal_captured_dataset(store, intermediate_ref, *, model_ref, train_tasks, max_sequence_tokens):
+    """Encode samples already checked by SFTDatasetBuilder or RepairSFTDatasetBuilder.
+
+    This private encoder is not a new admission path for arbitrary intermediates.
+    Public builder methods always revalidate captures/proofs before calling it.
+    Native outputs identify assistant positions, including masked repair prefixes.
+    Other context uses the same non-assistant ``user`` convention as chat authoring;
+    it does not claim to recover each original chat role from opaque input tokens.
+    """
+    dataset = store.read_json(intermediate_ref)
+    model = store.read_json(model_ref)
+    require(
+        dataset.get("schemaVersion") == 1
+        and dataset.get("kind") in ("sft-dataset", "repair-sft-dataset")
+        and isinstance(dataset.get("samples"), list)
+        and 0 < len(dataset["samples"]) <= MAX_RECORDS
+        and type(max_sequence_tokens) is int
+        and max_sequence_tokens > 1,
+        "invalid-captured-sft-dataset",
+        "offline conversion needs a nonempty validated capture dataset within its limits",
+    )
+    require(
+        isinstance(train_tasks, (list, tuple)) and train_tasks,
+        "missing-capture-train-scope",
+        "the caller must supply its admitted train task descriptors",
+    )
+    tasks = {(task["id"], task["taskRef"]["digest"]): task for task in train_tasks}
+    require(
+        len(tasks) == len(train_tasks),
+        "duplicate-capture-train-task",
+        "train task descriptors must be unique",
+    )
+    limits = model_limits(store, model)
+    refs, total_bytes = [], 0
+    for sample in dataset["samples"]:
+        raw = sample["sourceTrajectory"]
+        context = store.read_json(raw["context_ref"])
+        require(
+            all(context[key] == model[key] for key in ("tokenizerDigest", "chatTemplateDigest")),
+            "capture-tokenizer-drift",
+            "captured token semantics differ from the offline actor model",
+        )
+        task = tasks.get((context["taskId"], context["taskRef"]["digest"]))
+        require(
+            task is not None,
+            "capture-train-scope-mismatch",
+            "captured task is outside the caller's admitted train scope",
+        )
+        tokens = list(sample["tokens"])
+        prompt_length = len(tokens) - sample["responseLength"]
+        mask = [0] * prompt_length + list(sample["lossMask"])
+        native = [0] * len(tokens)
+        for ref in raw["receipt_refs"]:
+            receipt = store.read_json(ref)
+            inputs = store.read_json(receipt["inputTokenIdsRef"])
+            outputs = store.read_json(receipt["outputTokenIdsRef"])
+            if len(inputs) >= len(tokens):
+                break  # A verified prefix deliberately omits later calls.
+            stop = len(inputs) + len(outputs)
+            require(
+                stop <= len(tokens) and tokens[:stop] == inputs + outputs,
+                "capture-offline-token-drift",
+                "offline tokens must remain the exact validated native prefix",
+            )
+            native[len(inputs) : stop] = [1] * len(outputs)
+        require(
+            len(mask) == len(native)
+            and all(not loss or generated for loss, generated in zip(mask, native, strict=True)),
+            "capture-offline-mask-drift",
+            "offline loss cannot include tokens absent from native generation",
+        )
+        body = {
+            "schemaVersion": 1,
+            "source": {
+                "taskId": task["id"],
+                "family": task["family"],
+                "taskDigest": task["taskRef"]["digest"],
+            },
+            "tokens": tokens,
+            "lossMask": mask,
+            "tokenRoles": ["assistant" if generated else "user" for generated in native],
+        }
+        record = validate_record({**body, "id": digest_json(body)}, max_sequence_tokens)
+        check_model_limits(record, limits, max_sequence_tokens)
+        ref = store.put_json(record)
+        total_bytes += len(store.read_bytes(ref))
+        require(
+            total_bytes <= MAX_DATA_BYTES,
+            "offline-dataset-limit",
+            "captured SFT records exceed the offline byte limit",
+        )
+        refs.append(ref)
+    require(
+        len({ref["digest"] for ref in refs}) == len(refs),
+        "duplicate-offline-record",
+        "captured SFT records must be unique",
+    )
+    manifest = {
+        "schemaVersion": 1,
+        "kind": "offline-sft-dataset",
+        "tokenizerDigest": model["tokenizerDigest"],
+        "chatTemplateDigest": model["chatTemplateDigest"],
+        "maskContract": "assistant-token-mask-v1",
+        "records": refs,
+    }
+    dataset_ref = store.put_json(manifest)
+    return {
+        "datasetRef": dataset_ref,
+        "recordCount": len(refs),
+        "maskContract": manifest["maskContract"],
+        "supervisionRef": store.put_json(
+            {
+                "schemaVersion": 1,
+                "kind": "verified-capture-supervision",
+                "datasetRef": dataset_ref,
+                "modelRef": model_ref,
+                "intermediateRef": intermediate_ref,
+                "labelSource": "independent_verifier",
+                "contextRoleConvention": "non-policy-as-user",
+            }
+        ),
+    }
+
+
 def window(records, seed, position, size):
     return offline_window({"records": records, "seed": seed, "position": position, "size": size})
 

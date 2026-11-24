@@ -13,6 +13,8 @@ dependencies = ["psutil>=5.9,<8", "tomli>=2.0,<3; python_version < '3.11'", "tom
 agents = ["openai-codex==0.159.3"]
 gateway = ["aiohttp>=3.11,<4"]
 deployment = ["supervisor==4.3.0"]
+training-metrics = ["nltk>=3.10,<4", "scikit-learn>=1.5,<2"]
+training-math = ["math-verify[antlr4_13_2]==0.9.0"]
 dev = ["ruff==0.17.0", "mypy==2.4.0"]
 
 [project.scripts]
@@ -37,4 +39,4 @@ select = ["E4", "E7", "E9", "F", "I"]
 python_version = "3.10"
 strict = true
 follow_imports = "silent"
-files = ["gear/core", "gear/evaluation", "gear/memory", "gear/search", "gear/algorithms", "gear/project.py", "gear/training/contracts.py", "gear/training/loop.py", "gear/training/storage/loop_journal.py", "gear/training/runtime/implementation.py"]
+files = ["gear/core", "gear/curriculum", "gear/evaluation", "gear/memory", "gear/search", "gear/algorithms", "gear/project.py", "gear/training/contracts.py", "gear/training/loop.py", "gear/training/storage/loop_journal.py", "gear/training/runtime/implementation.py", "gear/training/recipes/diagevo.py", "gear/training/recipes/diagevo_memory.py", "gear/training/recipes/diagevo_round.py", "gear/training/recipes/diagevo_challenger.py"]

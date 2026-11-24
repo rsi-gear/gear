@@ -85,8 +85,7 @@ class OPRO(Algorithm):
         if type(self.confirmation) is not bool:
             raise ValueError("confirmation must be boolean")
 
-    @staticmethod
-    def _tasks(view: SearchView) -> tuple[TaskSamples, ...]:
+    def _tasks(self, view: SearchView) -> tuple[TaskSamples, ...]:
         return tuple(
             TaskSamples(task.id, tuple(range(cast(int, view.budget["repetitions"]))))
             for task in view.tasks
@@ -114,6 +113,71 @@ class OPRO(Algorithm):
             raise ValueError("proposed prompt must contain nonempty text")
         return text, {}
 
+    def _propose(self, view: SearchView, state: StateTree, text: str) -> Decision:
+        data = cast(dict[str, Any], state.data)
+        current = CandidateRef(**data["current"])
+        refs = {
+            data["current_evidence"]["ref"]["digest"]: ArtifactRef(
+                **data["current_evidence"]["ref"]
+            )
+        }
+        for item in data["history"]:
+            if item["evidence"]:
+                refs[item["evidence"]["digest"]] = ArtifactRef(**item["evidence"])
+        return self._call(
+            state,
+            "propose",
+            self.proposer(
+                MetaInput(
+                    current,
+                    tuple(task.id for task in view.tasks),
+                    (current, *refs.values()),
+                    json_value(
+                        {
+                            "prompt_path": self.prompt_path,
+                            "current_prompt": text,
+                            "history": data["history"],
+                            "playbook": data.get("playbook", []),
+                        }
+                    ),
+                ),
+                key=f"round-{data['round']}/propose",
+            ),
+            before=FileContent(text),
+            base_prompt=data.get("base_prompt", text),
+            pages=[],
+        )
+
+    def _handle_proposal(
+        self, view: SearchView, state: StateTree, value: dict[str, Any]
+    ) -> Decision:
+        data = cast(dict[str, Any], state.data)
+        text, changes = self._proposal(value, data)
+        before = FileContent(**data["before"])
+        if text == before.content:
+            return self._finish_round(
+                view,
+                state.updated(candidate=data["current"]),
+                data["current_evidence"],
+                None,
+                "proposal leaves the prompt unchanged",
+            )
+        return self._call(
+            state,
+            "materialize",
+            self.editor(
+                MaterializeInput(
+                    CandidateRef(**data["current"]),
+                    EditPlan(
+                        (FileEdit("replace", self.prompt_path, before.digest, FileContent(text)),)
+                    ),
+                ),
+                key=f"round-{data['round']}/materialize",
+            ),
+            proposed_text=text,
+            **changes,
+        )
+
     def _compare(
         self, view: SearchView, data: dict[str, Any], evidence: dict[str, Any]
     ) -> ComparisonResult:
@@ -134,6 +198,22 @@ class OPRO(Algorithm):
         )
         return cast(
             ComparisonResult, self.ranker(ComparisonInput(plan, sets, view.objective, view.anchor))
+        )
+
+    def _candidate_ready(
+        self, view: SearchView, state: StateTree, candidate: CandidateRef
+    ) -> Decision:
+        data = cast(dict[str, Any], state.data)
+        state = state.updated(candidate=candidate)
+        if getattr(self, "screen", None) is not None:
+            return self.step(view, state.updated(phase="screen", screen_state=None))
+        return self._call(
+            state,
+            "evaluate",
+            self.evaluator(
+                ExecutionInput(candidate, SamplePlan(self._tasks(view))),
+                key=f"round-{data['round']}/evaluate",
+            ),
         )
 
     @staticmethod
@@ -350,81 +430,12 @@ class OPRO(Algorithm):
                     pages=pages,
                 )
             text = decode_artifact_pages(tuple(pages), max_bytes=1024 * 1024).decode("utf-8")
-            current = CandidateRef(**data["current"])
-            refs = {
-                data["current_evidence"]["ref"]["digest"]: ArtifactRef(
-                    **data["current_evidence"]["ref"]
-                )
-            }
-            for item in data["history"]:
-                if item["evidence"]:
-                    refs[item["evidence"]["digest"]] = ArtifactRef(**item["evidence"])
-            return self._call(
-                state,
-                "propose",
-                self.proposer(
-                    MetaInput(
-                        current,
-                        tuple(task.id for task in view.tasks),
-                        (current, *refs.values()),
-                        json_value(
-                            {
-                                "prompt_path": self.prompt_path,
-                                "current_prompt": text,
-                                "history": data["history"],
-                                "playbook": data.get("playbook", []),
-                            }
-                        ),
-                    ),
-                    key=f"round-{data['round']}/propose",
-                ),
-                before=FileContent(text),
-                base_prompt=data.get("base_prompt", text),
-                pages=[],
-            )
+            return self._propose(view, state, text)
         if phase == "propose":
-            text, changes = self._proposal(value, data)
-            before = FileContent(**data["before"])
-            if text == before.content:
-                return self._finish_round(
-                    view,
-                    state.updated(candidate=data["current"]),
-                    data["current_evidence"],
-                    None,
-                    "proposal leaves the prompt unchanged",
-                )
-            return self._call(
-                state,
-                "materialize",
-                self.editor(
-                    MaterializeInput(
-                        CandidateRef(**data["current"]),
-                        EditPlan(
-                            (
-                                FileEdit(
-                                    "replace", self.prompt_path, before.digest, FileContent(text)
-                                ),
-                            )
-                        ),
-                    ),
-                    key=f"round-{data['round']}/materialize",
-                ),
-                proposed_text=text,
-                **changes,
-            )
+            return self._handle_proposal(view, state, value)
         if phase == "materialize":
             candidate = CandidateRef(**value["candidate"])
-            state = state.updated(candidate=candidate)
-            if getattr(self, "screen", None) is not None:
-                return self.step(view, state.updated(phase="screen", screen_state=None))
-            return self._call(
-                state,
-                "evaluate",
-                self.evaluator(
-                    ExecutionInput(candidate, SamplePlan(self._tasks(view))),
-                    key=f"round-{data['round']}/evaluate",
-                ),
-            )
+            return self._candidate_ready(view, state, candidate)
         if phase == "evaluate":
             result = self._compare(view, data, value)
             if self.confirmation and self._improved(result, data):

@@ -27,6 +27,8 @@ Slime 固定为 `41014d1f29e201137fdffce737bb8bac65bc5219`，Megatron 固定为 
 
 开发者只需实现或组合四个阶段，入口和完整示例见 [开发指南](development.zh-CN.md#使用-hitchslime-基础组件)。`scriptSource` 会封存为 `trainer.script`；这与 agent runner 的选择无关。SFT 原始记录由 `seal-sft` 预先封存，运行时不接受会被忽略的旧 `stages` agent 覆盖配置。
 
+成功的 native 脚本作业将四阶段最终 checkpoint 和 history 封存到模型 `provenanceRef` 下的 `trainingLoopRef`。配方返回的新数据等 CAS 引用因此可由后续调用方读取；发布前再次核对最终 checkpoint、HF 导出和 commit。这个引用复用既有内容图传输，保留原图大小限制，不增加新传输协议。
+
 ## 离线数据作者入口
 
 先完成 [v2 部署配置](controller-v2.zh-CN.md) 或 [v1 配置](README.zh-CN.md)，准备已有的 `controller.json`、`base-spec.json` 和 `parent-model.json`（`seal-hf` 的结果），并安装 Gear Python 包。controller 的 Python >=3.10；聊天文本入口还需要与运行时锁一致的 transformers/tokenizers。

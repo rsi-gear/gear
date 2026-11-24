@@ -285,7 +285,11 @@ def preflight(request, config):
         return result
     try:
         if not v2 and not offline:
-            asyncio.run(HitchClient(config["hitchCommand"], config["hitchRoot"]).capabilities())
+            asyncio.run(
+                HitchClient(config["hitchCommand"], config["hitchRoot"]).capabilities(
+                    request["fixedHarness"]["adapter"]
+                )
+            )
         # V2's controller separately negotiates Hitch/provider capabilities. The
         # model node advertises its native protocol, without invoking Hitch.
         result.update(

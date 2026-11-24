@@ -75,7 +75,7 @@ class HitchClient:
             )
         return result
 
-    async def capabilities(self):
+    async def capabilities(self, harness="training-tool"):
         result = await self.call(["capabilities", "--json"])
         for field in (
             "training_external_binding",
@@ -88,9 +88,10 @@ class HitchClient:
                 "Hitch cannot satisfy " + field,
             )
         require(
-            "training-tool" in result.get("training_harnesses", []),
+            harness in ("training-tool", "model-call")
+            and harness in result.get("training_harnesses", []),
             "unsupported-hitch-harness",
-            "Hitch lacks the tested linear training harness",
+            "Hitch lacks the requested fixed training harness: " + harness,
         )
         return result
 

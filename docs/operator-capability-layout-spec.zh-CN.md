@@ -8,13 +8,14 @@
 
 面向算法工程师提供少量稳定入口。作者能找到基础操作、评估、记忆、训练和搜索组件，选择已有实现或组合自己的算法。公共结构反映使用方式，内部执行与存储分层不要求作者学习。
 
-能力入口为 `core`、`evaluation`、`memory`、`training`、`search`；完整算法实现放在 `algorithms`。算法工程师既可以直接调用完整算法，也可以选择能力模块中的算子组合自己的算法。
+能力入口为 `core`、`evaluation`、`memory`、`curriculum`、`training`、`search`；完整算法实现放在 `algorithms`。算法工程师既可以直接调用完整算法，也可以选择能力模块中的算子组合自己的算法。
 
 | 入口 | 作者要做的事 | 边界 |
 | --- | --- | --- |
 | `gear.core` | 定义组件、操作候选和材料、调用模型 | 提供基础对象与基础操作，不决定搜索、评分或知识更新策略 |
 | `gear.evaluation` | 执行、采样评估、读取证据、比较结果 | 产生和比较评估结果，不决定候选是否被采纳或晋级 |
 | `gear.memory` | 查询历史、更新档案、维护知识和版本 | 管理明确的内容与记录，不自动决定从结果中学什么 |
+| `gear.curriculum` | 从失败案例规划、生成和筛选练习数据 | 只提供算子和输入输出；转换、执行、准入和持久化由调用方负责 |
 | `gear.training` | 构造训练数据、更新模型、运行训练流程 | 保留现有训练能力和接口，训练后端按需加载 |
 | `gear.search` | 组合父代、采样、提案、排名、停止和流程 | 提供可复用搜索算子及编排合同 |
 | `gear.algorithms` | 直接使用 GEPA、RandomSearch 等完整算法 | 用公共能力实现可运行算法，同时作为组合方式的参考示例 |
@@ -28,6 +29,7 @@ gear/
   core/                 Module、基础对象、编辑、候选、Meta、材料读取
   evaluation/           Evaluate、Rollout、证据、指标与比较
   memory/               历史、档案、Playbook、知识库
+  curriculum/           failure→data 算子与输入输出；无执行或适配层
   training/             现有训练接口、流程及配方
   search/
     parents.py          父代选择算子
@@ -132,7 +134,7 @@ run = Project.open(".").refine(algorithm=GEPA())
 
 ## 6. 组件和数据合同
 
-下面覆盖规范能力入口的公开符号。常用算子和类型从五个能力入口导出，完整算法从 algorithms 导出；合同生成、重建及 wire 校验保持内部实现，不作为额外业务领域暴露。
+下面覆盖规范能力入口的公开符号。常用算子和类型从六个能力入口导出，完整算法从 algorithms 导出；合同生成、重建及 wire 校验保持内部实现，不作为额外业务领域暴露。
 
 | 归属 | 类型与辅助函数 |
 | --- | --- |
@@ -141,11 +143,12 @@ run = Project.open(".").refine(algorithm=GEPA())
 | `core` 的运行声明 | `AccessPolicy`、`ImportSource`、`ScreeningPolicy`、`CompleteTaskInput` |
 | `evaluation` | v2 `Task`、`TaskSamples`、`SamplePlan`、`ExecutionInput`、`ScoreInput`、`EvidenceSetSpec`、`EvidenceRecord`、`EvidenceSet`、`ReadEvidenceInput`、`ComparisonPlan`、`ComparisonInput`、`ComparisonResult` |
 | `memory` | `HistoryInput`、`ArchiveInput`、`PlaybookEntry`、`PlaybookDelta`、`PlaybookInput`、`CounterDelta`、`CommitLibraryInput`、`PublishLibraryInput` |
+| `curriculum` | `OutcomeRecord`、`OutcomeCase`、`FailureMode`、`LearningTarget`、`PracticePlan`、`PracticeDraft`、`ValidationPlan`、`ValidationReport`、`TaskPoolPlan`；[完整 API](curriculum.zh-CN.md) |
 | `search` | `Algorithm`、v2 `SearchAlgorithm`、`SearchView`、`Decision`、`Terminal`、`ScreenInput`、`ScreenResult`、`ScreenCheckInput`、`ScreenVerdict` |
 
 基础对象不得导入搜索策略。通用随机源负责显式索引取值和命名空间；加权选择及选择记录留在 `search`，由 `search.parents` 中的父代策略使用。`Sequential` 不依赖 ParentOption 等搜索类型。
 
-依赖方向为：`algorithms` 按需组合五个能力包；`search` 使用 core/evaluation/memory；evaluation 和 memory 使用 core。core 不导入其余能力包或具体算法。training 保留现有独立执行结构，复用能力时不能造成循环。任何公共能力不得反向依赖 algorithms；旧路径兼容转发不属于能力实现。共享引用与 Call 放在轻量合同模块，包级导出也纳入依赖检查。
+依赖方向为：`algorithms` 按需组合六个能力包；`search` 使用 core/evaluation/memory；evaluation 和 memory 使用 core。curriculum 仅使用 core、公共 JSON 合同和标准库，不导入 search/training/evaluation/memory；转换与执行由调用方处理。core 不导入其余能力包或具体算法。training 保留现有独立执行结构，复用能力时不能造成循环。任何公共能力不得反向依赖 algorithms；旧路径兼容转发不属于能力实现。共享引用与 Call 放在轻量合同模块，包级导出也纳入依赖检查。
 
 ## 7. 实施与兼容
 
@@ -170,7 +173,7 @@ run = Project.open(".").refine(algorithm=GEPA())
 
 ## 8. 验收
 
-1. 作者指南区分五个能力入口和 algorithms 完整算法入口；全部现有算子和类型有明确归属，同一对象只有一份实现；search 不承载或重复导出完整算法。
+1. 作者指南区分六个能力入口和 algorithms 完整算法入口；全部现有算子和类型有明确归属，同一对象只有一份实现；search 不承载或重复导出完整算法。
 2. 干净进程从 core 导入并调用 ApplyEdits/CheckEdits，不加载 search、训练后端、Project 或执行适配器，不需要 Node/Hitch；基础操作没有隐式 I/O。
 3. 六类策略能单独使用、替换、描述和重建；参数化组件支持嵌套参数与 clone，clone 不复制运行状态。
 4. GEPA/RandomSearch 可从 gear.algorithms 导入并通过 Project 运行，默认组件和可替换参数完整；固定输入、配置、随机种子与回执时，其选择、任务范围、提案、排名、停止理由和阶段轨迹符合原行为。公共能力导入不加载具体算法。

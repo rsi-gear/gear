@@ -44,6 +44,15 @@ describe('deployment checks before experiment freeze', () => {
     expect(await readdir(root)).toEqual(['controller.json'])
     await expect(trainingCommand(['preflight-deployment', 'extra', '--config', file])).rejects.toMatchObject({ code: 'usage' })
   })
+  it('recognizes text-only training and the actual upstream endpoint capability name', async () => {
+    fixture.caps.training_harnesses = ['model-call']
+    expect((await preflightDeployment(fixture.config, fixture.invoke)).readyForRuntimeProbes).toBe(true)
+    delete fixture.caps.external_endpoint_binding
+    fixture.caps.external_endpoint = '1'
+    expect(check(await preflightDeployment(fixture.config, fixture.invoke), 'external-model-endpoint')?.status).toBe('blocked')
+    fixture.caps.external_endpoint_binding = '1'; fixture.caps.training_harnesses = ['codex']
+    expect(check(await preflightDeployment(fixture.config, fixture.invoke), 'training-harness')?.status).toBe('blocked')
+  })
   it('reports controller/Harbor readiness even when the model node is unreachable and redacts transport diagnostics', async () => {
     vi.mocked(ModelNodeTransport.prototype.call).mockRejectedValue(new Error('private-host-credential'))
     const report = await preflightDeployment(fixture.config, fixture.invoke)

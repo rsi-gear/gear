@@ -1,15 +1,16 @@
 # 可组合算法算子作者指南
 
-算子按用途从五个能力入口导入，完整算法从 `gear.algorithms` 导入：
+算子按用途从六个能力入口导入，完整算法从 `gear.algorithms` 导入：
 
 | 入口 | 常用内容 |
 | --- | --- |
 | `gear.core` | Module、编辑、候选生成、Meta、材料读取、Call 与状态 |
 | `gear.evaluation` | Evaluate、Rollout、样本计划、证据与 CompareCandidates |
 | `gear.memory` | 历史查询、档案更新、Playbook、知识库 |
+| `gear.curriculum` | 失败案例、学习目标、练习生成与验证；[调用方组合示例](curriculum.zh-CN.md) |
 | `gear.training` | 训练数据、模型更新与训练流程 |
 | `gear.search` | 搜索合同、筛查和可组合流程；六类策略位于对应子模块 |
-| `gear.algorithms` | 可直接交给 Project 的 OPRO、ACE、RRSI、DarwinX、GEPA、RandomSearch、Harness2 完整实现 |
+| `gear.algorithms` | 可直接交给 Project 的 OPRO、ReflectiveSearch、ACE、RRSI、DarwinX、GEPA、RandomSearch、Harness2 完整实现 |
 
 纯算子直接返回值；外部工作由 `Call` 描述，并在 `Decision` 提交后执行。选择、排序和流程留在 Python，运行时负责授权、预算、封存和恢复。
 
@@ -103,6 +104,33 @@ evidence = EvidenceSet.from_dict({**collection, "ref": saved_ref, "loaded": True
 `CompareCandidates(ComparisonInput(plan, sets, view.objective, baseline))` 要求明确共同任务、权重、槽、reducer 和 objective。配置 objective 时复用既有 Python 指标公式；相对 baseline 的指标需要显式 baseline。未加载、缺失、评分失败和约束不满足分别报告，失败不能缩小分母或伪装为任务零分。完整示例见 [OPRO](../python/gear/algorithms/opro.py)。
 
 算法内部采纳、任务输出选择、库发布、champion gate 是独立事件。终止 `nominate` 才请求最终 gate；作者的 fresh 样本不会混入独立冻结的 seed/held-out 验收。
+
+## 训练反馈与候选选型分离的 harness 搜索
+
+`ReflectiveSearch` 在已准入的 seed 任务中显式划分反馈与验证范围：
+
+```python
+from gear import Project
+from gear.algorithms import ReflectiveSearch
+from gear.search import PromptConstraints
+
+run = Project.open().refine(
+    rounds=2,
+    algorithm=ReflectiveSearch(
+        train_task_ids=("learn-1", "learn-2"),
+        validation_task_ids=("select-1", "select-2"),
+        constraints=PromptConstraints(max_characters=1800),
+        target_characters=1200,
+        max_repairs=2,
+    ),
+)
+```
+
+反馈和验证任务必须非空、互不重叠且均已准入。算法将当前候选的训练执行与具体 assessment 交给 Meta，验证得分只用于严格改进的候选采纳，不进入提案或修订材料。缺失、基础设施失败或评分失败的训练证据会停止提案。
+
+候选先按冻结的字符上限、非空与无 NUL 规则检查。超长等违规文本作为独立 Meta 调用有限修订，使用稳定调用键和原运行的生成额度；修订耗尽就拒绝该轮，不截断文本或执行违规候选。JSON/schema 与基础设施错误仍由正式运行时处理，不能假装成长度问题自动重复收费。`target_characters` 是留出余量的生成目标，`max_characters` 才是确定性硬校验。正式集成测试覆盖修订结果已完成但确认丢失后的 `Project.resume`，恢复复用原回执。
+
+curriculum 外层调用方可以设置 `nominate=False`，从终结 outcome 取得已封存的选择，随后在新 run 准入下一批生成任务；此时不会触发 held-out 发布门禁。固定外部评测由调用方在最终冻结后执行。这不允许在同一个 run 中扩大任务范围，也不自动更新项目的正式 champion。
 
 ## 筛查
 

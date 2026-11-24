@@ -88,13 +88,47 @@ controller workspace 和 CAS 必须持久化：缓存授权与续跑读取原 co
 
 `behaviorPolicyRef` 表示轨迹生产策略，`updateStart` 区分完整 optimizer/scheduler/RNG 恢复与显式初始权重冷启动。`referenceModelRef` 由需要它的目标使用；当前 GRPO schema 仍要求此字段必填。当前 Slime GRPO 仍严格 on-policy：不能把任意其他策略的轨迹或任意初始 checkpoint 当作已支持的更新方式。旧配置保留已有默认值。
 
-`stages.SFTDatasetBuilder` 是独立的成功解/已验证前缀提取器，仅输出 `sft-dataset` 中间产物；它不直接输出 `offline-sft-v1` 所需的封存数据合同。内置 SFT 更新已由 `gear.training.pipelines.offline_sft` 四阶段组合和 Slime updater 支持，使用前按 [配方指南](recipes.zh-CN.md) 编码、绑定 train 来源并封存数据。前缀提取器的调用示例：
+`stages.SFTDatasetBuilder.build` 提取成功解／已验证前缀，保留 `sft-dataset` 中间输出；`build_offline` 重新校验捕获与 proof 后直接生成现有 `offline-sft-dataset` 合同。后者可交给 `gear.training.pipelines.offline_sft` 四阶段组合和 Slime updater，仍按 [配方指南](recipes.zh-CN.md) 绑定训练范围、配置与运行认证。前缀提取器的调用示例：
 
 ```python
 from gear.training.data.builders import SFTDatasetBuilder
 # raws 是持久化 RawTrajectory；proofs 由可信 verifier 提供，值为 CAS ref。
 dataset_ref = await SFTDatasetBuilder(store).build(raws, verifications=proofs)
 ```
+
+新增监督的数据准入在 `gear.training.data.supervision`，调用方直接把语义提案转换成这里的输入，不使用 curriculum adapters：
+
+- `RepairSFTDatasetBuilder(store).build(repairs)`：每项为 `(failed_raw, revised_raw, repair_proof_ref, success_proof_ref)`。输出 `repair-sft-dataset` 中间数据，token 全部取自重新执行的 `revised_raw`；`lossStartReceipt` 之前的生成 token 和所有工具观测不计 loss。它不拼接旧 token，也不导出可伪装为 on-policy 的旧 logprob。
+- `PreferenceDatasetBuilder(store).build(pairs)`：每项为 `(chosen_raw, rejected_raw, judgment_ref)`。输出 `preference-dataset` 中间数据。两个实际捕获必须对应相同 task/environment、tokenizer/template、初始状态与输入 token；trajectory 可以在后续分叉，step 另外核对选中 call 的相同输入和决策状态。保留 `human / independent_verifier / majority_vote` 标签来源与置信度。这里没有 DPO updater。
+- `ProceduralDatasetBuilder(store).build(examples, model_ref=..., max_sequence_tokens=...)`：每项为 `(example, validation_ref)`，example 包含 `question / answer / source / materialProtocol`。语义验证绑定完整 example 摘要；使用封存模型的真实 chat tokenizer 和 assistant mask，返回现有 `offline-sft-dataset` 的引用与额外 `supervisionRef`。调用方应同时保存该 synthetic 来源侧录，不能把它当原生 rollout。
+
+成功／前缀与修复捕获可直接封存给现有 SFT 更新器：
+
+```python
+sealed = await SFTDatasetBuilder(store).build_offline(
+    raws, verifications=proofs,
+    model_ref=parent["modelRef"],
+    train_tasks=spec["datasets"]["train"]["tasks"],
+    max_sequence_tokens=4096,
+)
+# 修复路径使用相同的模型、来源和长度参数：
+sealed = await RepairSFTDatasetBuilder(store).build_offline(
+    repairs, model_ref=parent["modelRef"],
+    train_tasks=spec["datasets"]["train"]["tasks"],
+    max_sequence_tokens=4096,
+)
+# 保存 sealed["supervisionRef"]；将 sealed["datasetRef"] 配入新 SFT spec 的 offlineTraining。
+```
+
+两个方法都先执行原有 builder 的捕获／proof 校验，不接受任意中间 JSON 绕过验证。编码直接复制 native token IDs；补齐 prompt 零掩码，并保留修复前缀的零掩码，不进行 decode/re-encode。捕获的 tokenizer/template 必须与目标模型一致，task ID 和 task 内容摘要必须匹配调用方已准入的 train 描述；现有 SFT admission 再次核对 family 和实际授权。长度、词表、记录数、字节数与重复记录限制沿用离线合同，超限拒绝而不截断。
+
+`supervisionRef` 绑定目标模型、最终数据和原中间产物，修复中间产物保留原失败与新修复的捕获引用。`tokenRoles` 按 native 输出识别 assistant 位置，其他上下文沿用离线聊天编码的 `user` 非监督占位；不声称从不透明输入 token 还原每条 system/tool 消息的原角色。该约定也记录在侧录中。最终 SFT 记录不携带 behavior logprob，不以旧策略概率驱动更新。
+
+修复 proof 的 `failedTrajectoryDigest / revisedTrajectoryDigest` 和 preference proof 的 `chosenTrajectoryDigest / rejectedTrajectoryDigest` 均为整个 `asdict(RawTrajectory)` 的训练 CAS 摘要，绑定 episode、receipt、feedback、context 和可选 assembly。proof 还需 `schemaVersion=1 / verified=true / evidenceRef / materialProtocols`，并由宿主可信验证路径提供。普通模型写出的 `verified=true` 不构成认证。builder 的 `allowed_protocols` 默认仅允许 `feedback_only`，调用方只能在获得相应材料授权后扩展。
+
+修复的 `kind="verified-repair"` 还需 `failureVerified=true`、`mode`、`startStateDigest`、`lossStartReceipt`。`verified_replay` 核对原始初始状态；`terminal_continue` 核对实际失败终态；`checkpoint_reset` 核对原失败执行记录中的 checkpoint。宿主采集到的 `initialStateRef / finalStateRef / checkpointStateRefs / decisionStateRefs` 由调用方放入冻结 context。现有 runner 没有提供这些状态证据时会明确拒绝，不能据此宣称它支持 reset。偏好 proof 的 kind 为 `verified-preference`，声明 `scope / labelSource / initialStateDigest`；step 另提供两侧 receipt index 和 `decisionStateDigest`。过程问答 proof 的 kind 为 `verified-procedural-example`，通过 `exampleDigest` 绑定输入。
+
+上述状态引用仅是 builder 的显式输入要求，不新增运行时 reset 协议。`test_training_supervision.py` 覆盖真实 tokenizer、精确捕获到现有 SFT batch 的衔接、CPU 梯度仅作用于修复后缀、状态不一致、伪标签及旧 receipt 拒绝。CPU 合同与 loss 测试不替代本配方的实机 GPU 认证。
 
 proof 必须包含 `kind`（`verified-success` 或 `verified-prefix`）、`episodeId`、`runId`、`verified=true`、有序 `receiptDigests`、`evidenceRef`；prefix 另需 `receiptCount`。完整成功还要求正常结束及有效 canonical feedback。成功不能从 reward>0 推断，首次错误位置不能从最终失败评分推断。调用方负责提供独立可信的成功/步骤证据；没有 proof 的轨迹不导出。builder 仍验证 native token/logprob 与 v2 assembly，再复制精确 tokens 和 mask，不改变原反馈或制造训练证据。
 

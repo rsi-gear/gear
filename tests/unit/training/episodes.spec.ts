@@ -18,11 +18,12 @@ type Json = Record<string, any>
 describe('controller-owned rollout reconciliation', () => {
   const roots: string[] = []
   afterEach(async () => { vi.restoreAllMocks(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
-  async function setup(generated = false) {
+  async function setup(generated = false, adapter = 'training-tool') {
     const root = await mkdtemp(join(tmpdir(), 'gear-episodes-')); roots.push(root)
     const store = new ModelTrainingStore(join(root, 'controller')), node = new TrainingContentStore(join(root, 'node'))
     const legacy = await fixture(store), hash = digestJson('canonical-identity')
-    const harness = { harnessId: 'training-tool', revisionIdentity: hash, artifactId: hash }
+    const harness = { harnessId: adapter, revisionIdentity: hash, artifactId: hash }
+    legacy.fixedHarness.adapter = adapter
     legacy.fixedHarness.manifestRef = await store.putJson({ hitch: harness })
     legacy.datasets.train.tasks[0]!.environmentRef = await store.putJson({ taskDigest: hash, verifierIdentity: hash, hitchEnvironmentIdentity: hash })
     if (generated) legacy.stages = { taskSource: { runner: 'custom-provider', options: {}, instructionsRef: await store.putBytes(Buffer.from('Create train tasks'), 'text/plain'), maxRepairs: 1, timeoutSeconds: 10 } }
@@ -66,7 +67,7 @@ describe('controller-owned rollout reconciliation', () => {
     const receiptRef = await node.putJson(receipt)
     const state = { submits: 0, submitted: [] as readonly string[], loseSubmitReply: false, loseResultReply: false, loseAdmissionReply: false,
       terminal: true, cancelled: false, wrongVerifier: false, admission: { valid: true } as Json, admitted: 0, resultCalls: 0,
-      canonicalHarnessRef: `training-tool@commit:${request.fixedHarness.commit}`, canonicalHarnessArtifact: hash }
+      canonicalHarnessRef: `${adapter}@commit:${request.fixedHarness.commit}`, canonicalHarnessArtifact: hash, trainingHarnesses: ['training-tool', 'model-call'] }
     const transport = new ModelNodeTransport({ transport: { type: 'local' }, workspace: root, python: ['fixture'], configPath: join(root, 'node.json'),
       gateway: { localPort: 31001, nodePort: 31001 } }, { nodeId: 'gpu-node', generation: 'boot-1' })
     const uploaded: ContentRef[] = []
@@ -106,7 +107,7 @@ describe('controller-owned rollout reconciliation', () => {
     const invoke: typeof jsonProcess = vi.fn(async (command, args, payload) => {
       if (command[0] === 'fixture-python') return { path: (payload as Json | undefined)?.destination }
       const a = args.slice(2), op = a.slice(0, 2).join(' ')
-      if (a[0] === 'capabilities') return { training_external_binding: '1', exact_policy_tokens: '1', training_policy_fencing: '1', training_harnesses: ['training-tool'] }
+      if (a[0] === 'capabilities') return { training_external_binding: '1', exact_policy_tokens: '1', training_policy_fencing: '1', training_harnesses: state.trainingHarnesses }
       if (op === 'training runtime') return { schema_version: '2', package_version: '0.2.9', node_version: 'v22.0.0', runtime_id: hash,
         source: { kind: 'git-checkout', commit: request.trainer.runtimeLock.hitchCommit, dirty: true } }
       if (op === 'training register') return { binding: (payload as Json).binding }
@@ -145,6 +146,16 @@ describe('controller-owned rollout reconciliation', () => {
     expect(evidence.generatedTaskBinding.taskSnapshotRef.digest).toBe((s.intent.context.taskRef as ContentRef).digest)
     expect(evidence.generatedTaskBinding.benchmarkId).toBe('local:generated-task')
     expect(s.state.submits).toBe(1)
+  })
+  it('admits model-call only when Hitch advertises the exact training harness', async () => {
+    const s = await setup(false, 'model-call')
+    s.state.trainingHarnesses = ['training-tool']
+    await expect(s.episodes.preflight(s.request)).rejects.toMatchObject({ code: 'hitch-harness-missing' })
+    expect(s.state.submits).toBe(0)
+    s.state.trainingHarnesses.push('model-call')
+    await s.episodes.preflight(s.request)
+    expect(await s.episodes.reconcile(s.handle)).toEqual({ pending: false })
+    expect(s.state.submitted[s.state.submitted.indexOf('--harness') + 1]).toMatch(/^model-call@git\+/)
   })
   it.each(['cancel', 'expired'])('reconciles generated episodes after %s without dispatching again', async mode => {
     const s = await setup(true); s.state.terminal = false

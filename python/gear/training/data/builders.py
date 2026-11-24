@@ -97,3 +97,18 @@ class SFTDatasetBuilder:
                 }
             )
         return self.store.put_json({"schemaVersion": 1, "kind": "sft-dataset", "samples": samples})
+
+    async def build_offline(
+        self, trajectories, *, verifications, model_ref, train_tasks, max_sequence_tokens
+    ):
+        """Revalidate native captures and seal the existing offline SFT contract."""
+        from gear.training.data.offline import _seal_captured_dataset
+
+        intermediate = await self.build(trajectories, verifications=verifications)
+        return _seal_captured_dataset(
+            self.store,
+            intermediate,
+            model_ref=model_ref,
+            train_tasks=train_tasks,
+            max_sequence_tokens=max_sequence_tokens,
+        )

@@ -216,6 +216,16 @@ class DevGRPOTests(unittest.TestCase):
         self.assertEqual(self.stage("model-updater")["committedUpdate"], 1)
         self.assertTrue((self.d.root / "four-stage-loop/result.json").exists())
 
+    def test_script_result_cannot_publish_another_checkpoint_cursor(self):
+        self.d.request["trainer"]["updatesPerCandidate"] = 1
+        original = dev_grpo.SlimeModelUpdater.update
+        def changed(updater, ctx, dataset):
+            return {**original(updater, ctx, dataset), "committedUpdate": 0}
+        with self.cpu_runtime(), patch.object(dev_grpo.SlimeModelUpdater, "update", changed), self.assertRaisesRegex(ContractError, "actual native commit"):
+            run(self.d.root)
+        self.assertEqual(self.native_events.count("train"), 1)
+        self.assertFalse((self.d.root / "artifacts.body.json").exists())
+
     def test_pending_export_only_recovery_does_not_repeat_preprocessing_or_gradient(self):
         self.d.request["trainer"]["updatesPerCandidate"] = 1
         self.d.rt.actor.export_hf = lambda path: (_ for _ in ()).throw(OSError("export interrupted"))

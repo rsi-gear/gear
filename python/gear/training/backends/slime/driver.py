@@ -300,7 +300,17 @@ def create_policy_lease(request, batch_id, policy, current_hf, incarnation):
     }
 
 
-def finalize_candidate(job_dir, request, store, prior_commits, checkpoint_ref, outcome, committed):
+def finalize_candidate(
+    job_dir,
+    request,
+    store,
+    prior_commits,
+    checkpoint_ref,
+    outcome,
+    committed,
+    *,
+    loop_result_ref=None,
+):
     if outcome == "completed":
         require(
             checkpoint_ref and len(prior_commits) == request["trainer"]["updatesPerCandidate"],
@@ -309,12 +319,35 @@ def finalize_candidate(job_dir, request, store, prior_commits, checkpoint_ref, o
         )
         checkpoint = store.read_json(checkpoint_ref)
         hf_manifest = store.read_json(checkpoint["hfExportRef"])
+        if request["trainer"].get("script"):
+            require(
+                loop_result_ref is not None,
+                "missing-training-loop-result",
+                "script candidates must publish their completed four-stage result",
+            )
+            result = store.read_json(loop_result_ref)
+            final = result.get("checkpoint")
+            require(
+                result.get("schemaVersion") == 1
+                and result.get("kind") == "native-training-loop-result"
+                and result.get("requestDigest") == digest_json(request)
+                and result.get("source") == request["trainer"]["script"]
+                and result.get("roundsCompleted") == request["trainer"]["updatesPerCandidate"]
+                and isinstance(final, dict)
+                and final.get("checkpointRef") == checkpoint_ref
+                and final.get("hfSnapshotRef") == checkpoint["hfExportRef"]
+                and final.get("committedUpdate") == committed
+                and final.get("commitRef") == prior_commits[-1],
+                "training-loop-result-drift",
+                "published stage result must end at the candidate's actual native commit",
+            )
         provenance = store.put_json(
             {
                 "schemaVersion": 1,
                 "requestDigest": digest_json(request),
                 "recipeDigest": request["recipeDigest"],
                 "updateCommitRefs": prior_commits,
+                **({"trainingLoopRef": loop_result_ref} if loop_result_ref is not None else {}),
             }
         )
         body = {
@@ -437,6 +470,7 @@ class SlimeRoundRuntime:
         self.workspace = self.job_dir
         self.offline = is_sft(request)
         self.replay = None
+        self.loop_result_ref = None
 
     def check_cancel(self):
         require(
@@ -766,7 +800,22 @@ def _run_public_recipe(runtime):
             previous_cancel()
 
         loop.check_cancel = check_cancel
-        return loop.run(loop_config)
+        result = loop.run(loop_config)
+        # Keep recipe outputs reachable through the existing model provenance
+        # graph, including post-update data. Paths and live runtime objects never
+        # enter this portable JSON/CAS result.
+        runtime.loop_result_ref = runtime.store.put_json(
+            {
+                "schemaVersion": 1,
+                "kind": "native-training-loop-result",
+                "requestDigest": digest_json(request),
+                "source": request["trainer"]["script"],
+                "roundsCompleted": result.rounds_completed,
+                "checkpoint": result.checkpoint,
+                "history": result.history,
+            }
+        )
+        return result
 
 
 def run(job_dir):
@@ -819,8 +868,9 @@ def run(job_dir):
             "legacy jobs cannot upgrade to the public preset without their original stage artifacts",
         )
     if len(prior_commits) == request["trainer"]["updatesPerCandidate"]:
-        # SQLite already committed every update. A lost completion response
-        # requires only immutable artifact publication, not CUDA or Ray startup.
+        # SQLite committed every update. Remaining script work may use local
+        # exported-model inference, but never needs another native actor update.
+        outcome = "completed"
         try:
             if four_stage:
                 checkpoint = store.read_json(resume_ref)
@@ -837,9 +887,24 @@ def run(job_dir):
                     resume_ref,
                     checkpoint["hfExportRef"],
                 )
-                _run_public_recipe(runtime)
+                try:
+                    _run_public_recipe(runtime)
+                except Exception as error:
+                    if getattr(error, "code", None) == "cancelled":
+                        outcome = "paused"
+                    elif getattr(error, "code", None) == "no-update":
+                        outcome = "inconclusive"
+                    else:
+                        raise
             finalize_candidate(
-                job_dir, request, store, prior_commits, resume_ref, "completed", start
+                job_dir,
+                request,
+                store,
+                prior_commits,
+                resume_ref,
+                outcome,
+                start,
+                loop_result_ref=runtime.loop_result_ref if four_stage else None,
             )
         finally:
             ledger.close()
@@ -1061,4 +1126,13 @@ def run(job_dir):
             ray.shutdown()
         finish_tracking(args)
         ledger.close()
-    finalize_candidate(job_dir, request, store, prior_commits, checkpoint_ref, outcome, committed)
+    finalize_candidate(
+        job_dir,
+        request,
+        store,
+        prior_commits,
+        checkpoint_ref,
+        outcome,
+        committed,
+        loop_result_ref=runtime.loop_result_ref if four_stage and "runtime" in locals() else None,
+    )

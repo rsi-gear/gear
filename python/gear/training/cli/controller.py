@@ -7,6 +7,7 @@ import copy
 import json
 import signal
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -76,7 +77,16 @@ def _follow(command):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__, prog="python -m gear.training")
+    arguments = sys.argv[1:] if argv is None else argv
+    if arguments and arguments[0] == "diagevo":
+        from gear.training.cli.diagevo import main as diagevo_main
+
+        return diagevo_main(arguments[1:])
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        prog="python -m gear.training",
+        epilog="Multi-round DiagEvo: python -m gear.training diagevo --help",
+    )
     parser.add_argument("action", choices=("run", "resume", "pause", "status", "validate"))
     parser.add_argument("targets", nargs="+", help="SPEC.json, SCRIPT_ID, or EXP_ID RUN_ID")
     parser.add_argument("--config", type=Path, required=True)

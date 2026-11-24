@@ -135,11 +135,14 @@ export class HitchModelEvaluator implements ModelEvaluator {
     })
   }
   async evaluate(request: ModelEvaluationRequest, key: string, intent: TrainingControlIntent = { schemaVersion: 2, sequence: 0, action: 'start' }, attemptContext?: { id: string; parentId?: string }): Promise<ModelEvaluationEvidence> {
-    requireContract(request.schemaVersion === 2 && request.harnessAdapter === 'training-tool', 'unsupported-evaluation-harness', 'endpoint candidate evaluation currently requires training-tool')
+    requireContract(request.schemaVersion === 2 && ['training-tool', 'model-call'].includes(request.harnessAdapter), 'unsupported-evaluation-harness', 'endpoint candidate evaluation requires training-tool or model-call')
     validateReadyEndpointBinding(request.endpointBinding, request.model, { ...request.condition, attempts: Math.max(...request.condition.slots.map(slot => slot.attempt)) }, [request.endpointBinding.deployment_receipt.source])
     requireContract(request.subject.weightsDigest === request.model.weightsDigest, 'evaluation-subject-drift', 'evaluation subject differs from its immutable model')
     requireContract(intent.action === 'start', 'invalid-evaluation-control', 'evaluate requires a start intent')
     requireContract(digestJson(this.options.budgets) === request.condition.budgetsDigest, 'evaluation-budget-drift', 'evaluation budgets differ from frozen conditions')
+    const capabilities = object(await this.call(['capabilities', '--json']))
+    requireContract(capabilities.external_endpoint_binding === '1' && Array.isArray(capabilities.endpoint_harnesses)
+      && capabilities.endpoint_harnesses.includes(request.harnessAdapter), 'unsupported-evaluation-harness', 'Hitch cannot evaluate the requested fixed harness with an external endpoint')
     return withTrainingFileLock(join(this.directory(key), 'operation.lock'), async () => {
       const { journal, attempt } = await freezeHitchAttempt(this.directory(key), request, attemptContext)
       const control = await controlEvaluation(this.options.workspace, journal.request!, key, intent, args => this.call(args))

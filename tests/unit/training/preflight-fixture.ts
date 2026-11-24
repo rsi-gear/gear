@@ -21,7 +21,7 @@ export function preflightFixture(root: string) {
     hostMemory: { totalBytes: 256_000_000_000, availableBytes: 128_000_000_000 }, cudaVersion: '12.8', ports: { rollout: 31002 } }
   const controller = { schema_version: '2', package_version: '0.2.9', node_version: 'v22.0.0', runtime_id: digestJson('controller-payload'),
     source: { kind: 'git-checkout', commit: 'b'.repeat(40), dirty: true } }
-  const caps: Record<string, unknown> = { training_external_binding: '1', exact_policy_tokens: '1', training_policy_fencing: '1', external_endpoint: '1',
+  const caps: Record<string, unknown> = { training_external_binding: '1', exact_policy_tokens: '1', training_policy_fencing: '1', external_endpoint_binding: '1',
     controller_runtime_observation: '2', local_execution_observation: '2', training_harnesses: ['training-tool'] }
   const environment = { schema_version: '2', host_platform: 'linux-x64',
     harbor: { status: 'available', version: '0.21.0', executable_digest: digestJson('harbor') },

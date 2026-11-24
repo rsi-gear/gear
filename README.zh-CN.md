@@ -153,7 +153,7 @@ Gear 采用受 **meta-learning（元学习）** 启发的双层架构，将任�
 
 ### 可定制的算法组件
 
-可复用算子按用途放在 `gear.core`、`gear.evaluation`、`gear.memory`、`gear.training` 和 `gear.search`，完整算法放在 `gear.algorithms`。例如 `ApplyEdits`、`CheckEdits` 属于 `gear.core`。搜索策略分为六个模块：
+可复用算子按用途放在 `gear.core`、`gear.evaluation`、`gear.memory`、`gear.curriculum`、`gear.training` 和 `gear.search`，完整算法放在 `gear.algorithms`。`gear.curriculum` 提供独立的 [failure→data 算子与 CPU 闭环示例](docs/curriculum.zh-CN.md)，转换与执行由调用方处理。例如 `ApplyEdits`、`CheckEdits` 属于 `gear.core`。搜索策略分为六个模块：
 
 | 模块 | 可定制内容 |
 | --- | --- |

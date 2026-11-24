@@ -50,22 +50,7 @@ class PolicyDatasetBuilder:
 
     async def build(self, ctx, trajectories):
         runtime = self.runtime
-        rollout_id = runtime.parent_start + ctx.round_index
-        require(
-            trajectories.get("kind") == "raw-grpo-round"
-            and trajectories.get("schemaVersion") == 1
-            and trajectories.get("rolloutId") == rollout_id,
-            "raw-round-drift",
-            "raw trajectories belong to another update",
-        )
-        lease = runtime.ledger.lease(trajectories["lease"]["batchId"])
-        require(
-            lease == trajectories["lease"]
-            and lease["state"] == "closed"
-            and lease["synchronizedWeightsRef"] == ctx.checkpoint["hfSnapshotRef"],
-            "raw-policy-drift",
-            "dataset must retain the original quiescent pre-update policy",
-        )
+        rollout_id, lease = _raw_round(runtime, ctx, trajectories)
         builder = NativeBuilder(runtime.store, runtime.request)
         groups = [
             await builder.build([RawTrajectory(**value) for value in group])
@@ -78,19 +63,45 @@ class PolicyDatasetBuilder:
             lease,
             trajectories["sourceEvidenceRefs"],
         )
-        runtime.ledger.seal(lease["batchId"], batch_ref)
-        atomic_json(
-            runtime.job_dir / "batch.json",
-            {"rolloutId": rollout_id, "batchRef": batch_ref},
-        )
-        return {
-            "schemaVersion": 1,
-            "kind": "grpo-dataset",
-            "rolloutId": rollout_id,
-            "batchRef": batch_ref,
-            "batchId": lease["batchId"],
-            "preUpdateHfRef": lease["synchronizedWeightsRef"],
-        }
+        return _publish_dataset(runtime, rollout_id, lease, batch_ref)
+
+
+def _raw_round(runtime, ctx, trajectories):
+    runtime.check_cancel()
+    rollout_id = runtime.parent_start + ctx.round_index
+    require(
+        trajectories.get("kind") == "raw-grpo-round"
+        and trajectories.get("schemaVersion") == 1
+        and trajectories.get("rolloutId") == rollout_id,
+        "raw-round-drift",
+        "raw trajectories belong to another update",
+    )
+    lease = runtime.ledger.lease(trajectories["lease"]["batchId"])
+    require(
+        lease == trajectories["lease"]
+        and lease["state"] == "closed"
+        and lease["synchronizedWeightsRef"] == ctx.checkpoint["hfSnapshotRef"],
+        "raw-policy-drift",
+        "dataset must retain the original quiescent pre-update policy",
+    )
+    return rollout_id, lease
+
+
+def _publish_dataset(runtime, rollout_id, lease, batch_ref):
+    runtime.check_cancel()
+    runtime.ledger.seal(lease["batchId"], batch_ref)
+    atomic_json(
+        runtime.job_dir / "batch.json",
+        {"rolloutId": rollout_id, "batchRef": batch_ref},
+    )
+    return {
+        "schemaVersion": 1,
+        "kind": "grpo-dataset",
+        "rolloutId": rollout_id,
+        "batchRef": batch_ref,
+        "batchId": lease["batchId"],
+        "preUpdateHfRef": lease["synchronizedWeightsRef"],
+    }
 
 
 class SlimeModelUpdater:
