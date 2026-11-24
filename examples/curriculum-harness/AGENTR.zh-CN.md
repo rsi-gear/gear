@@ -100,8 +100,6 @@ PYTHONPATH=python /tmp/gear-sentinel-env/bin/python \
 
 [Agent-R 测试](../../python/tests/test_agentr_retail.py)使用实际 Tau2 工具与 native 评分，模型响应是显式 fixture。覆盖误取消另一张订单后的状态回退、critic 较晚定位、重新执行的正确后缀、语义 mask、UCT 与去重、多轮树关闭、未知分数、失败不回填、材料隔离、收费回执恢复、离线篡改检测及无 SDK CLI 预检。
 
-本轮本地通过 22 项 Agent-R 检查、65 项 curriculum 回归、57 项 retail 回归、12 项 CoEvolve 回归及 5 项 TRACE 正式接入检查，共 161 项；Ruff、依赖边界、文档本地链接与 CI YAML 检查通过。最后增加结果写入前的摘要核对后，22 项 Agent-R 检查在最终源码上再次通过。CPU CI 已包含这些 Agent-R 检查，本地结果不表示远端 CI 已运行。
-
 ```sh
 GEAR_TEST_SENTINEL_RUNTIME=1 \
 GEAR_SENTINEL_TAU2_PATH=/tmp/gear-sentinel-tau2 PYTHONPATH=python \
@@ -110,5 +108,3 @@ GEAR_SENTINEL_TAU2_PATH=/tmp/gear-sentinel-tau2 PYTHONPATH=python \
 ```
 
 [正式接入检查](../../python/tests/test_agentr_search.py)需要先构建 Gear CLI（`npm run build`），覆盖完整来源重放、原任务／策略／family 绑定、作用域内的材料消费、无新任务准入、隐藏材料隔离、付费 Meta 响应恢复、结果成本篡改拒绝及原始 test 成对评价。模型响应是明确 fixture；有无材料的分支用于证明输入实际影响调用链，不作为算法收益证据。
-
-本阶段未新增真实 LLM 调用。真实修复率、未见任务收益、历史回归和单位成本收益均未验收。GPU 迭代 SFT 留待后续版本。

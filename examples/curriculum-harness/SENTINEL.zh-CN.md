@@ -2,7 +2,7 @@
 
 当前实现可恢复的调用链：实际 solver 执行与评分 → 训练轨迹去重与抽样 → 合并失败记忆 → 选择目标 → 实际工具探索 → 参考重放 → 编写新任务 → 执行校准与语义检查 → 固定／生成任务混合池 → 新 run 的正式 harness 搜索。使用固定权重的模型服务和 CPU 上的 Tau2 retail 工具，**不做 GPU 训练**。
 
-这是 [SENTINEL §3.3–3.4](https://arxiv.org/html/2606.12908v1#S3.SS3) 的部分接入：先执行参考轨迹，再生成对应请求。retail 混合池、三组对照和正式搜索后执行 mastery 探针已通过离线模型的实际 CLI／worker 集成；该配方的真实搜索效果与真实模型 mastery 测量仍待验收，没有导出一个宣称完整复现的 `gear.algorithms.SENTINEL`。
+调用方先执行参考轨迹，再据此生成客户请求；混合池和正式搜索沿用同一套 retail 工具。[SENTINEL §3.3–3.4](https://arxiv.org/html/2606.12908v1#S3.SS3)
 
 ## 实现与证据
 
@@ -160,11 +160,7 @@ PYTHONPATH=python /tmp/gear-sentinel-env/bin/python \
 
 默认生成行为保持不变。要在重新激活后直接复用失败记忆，传入完整的新 `history`、`observations=[]` 和 `use_failure_memory=true`；生成器只选择 active 模式，全已掌握时返回 `no_targets` 且不调用模型。随机组禁止携带或复用失败记忆。现有 fixed／random／failure 对照入口不自动开启 mastery 或 memory 策略，避免改变已冻结的实验条件。
 
-新增 10 项检查覆盖两条实际源失败、每条任务两次探针、掌握后停止生成、退化后重新激活并复用记忆、同轨迹新失败撤销 mastery 而不增加频次、旧输入重放不撤销后来的证明、策略隔离、未知结果、篡改／缺额拒绝、预算、恢复，以及实际正式搜索选出的 harness 接入探针。工具与 native 评分真实执行，模型均为明确替身；真实模型下的测量效果仍待验收。另有 1 项实际工具检查确认相同工具动作但不同确认对话可以保留不同 verdict；完全相同的轨迹仍去重，矛盾 verdict 仍拒绝。
-
-## 验证与待办
-
-### 固定／随机／failure 对照入口
+## 固定／随机／failure 对照入口
 
 [sentinel_experiment.py](sentinel_experiment.py) 在调用方组合现有采集、生成、混合池和正式搜索。三组初始 harness、固定模型、任务执行条件、每轮搜索上限和池大小一致；fixed 全部使用原始任务，random／failure 使用相同固定份额加生成份额。两种生成共用实际探索、参考重放、校准、写作和语义审查。随机组仅从预先声明的 `random_targets` 均匀抽取一个学习目标，不接收结果、失败记忆或案例；failure 组只接收当前 harness 的训练探针。当前对照不测跨轮 failure memory 的独立收益。
 
@@ -200,9 +196,9 @@ PYTHONPATH=python /tmp/gear-sentinel-env/bin/python \
 
 所有 seed／组／轮完成选型后，先封存 `test-admission.json`，再评测相同的固定 test；validation／test 不进入生成或 Meta。相同 seed 内完全相同的 harness 共用同一份采集／测试观测，避免重复收费及引入无意义的模型随机差异。配置、源码、编译 CLI、原生后端、provider、任务和最终选型均绑定摘要；恢复重新检查原记录并复用调用键。汇总计数来自唯一原生回执，不累加复用观测；配额上限与实际消耗分别报告。结果只给出描述性逐 seed 配对差值，不声称统计显著性。
 
-新增 5 项检查覆盖随机组无失败输入、实际 native 校准与离线重放、未完成观测的指标、三组正式运行及恢复、全拒绝后的缺额和不可比较状态。测试中真实执行 Gear CLI／worker、Tau2 工具与 DB 评分；模型仍为明确替身，不构成真实提升证据。
+## 运行集成测试
 
-显式结束协议与独立生成模型设置另经 35 项检查验证：结束回复有真实回执才进入评分，数据库分别决定成功／失败，未知结束请求没有评分；默认截止行为保持 unknown。三组实际 CLI／worker 集成验证生成模型设置不会改变 solver，结束调用进入对应预算。以上模型均为替身，真实模型兼容性和效果须单独记录。
+以下测试使用模型替身，执行 Gear CLI、worker、Tau2 工具和数据库评分。
 
 ```sh
 GEAR_TEST_SENTINEL_RUNTIME=1 \
@@ -211,22 +207,10 @@ PYTHONPATH=python:python/tests /tmp/gear-sentinel-env/bin/python \
   -m unittest test_sentinel_retail test_sentinel_collect test_sentinel_pool test_sentinel_search test_sentinel_experiment test_sentinel_mastery test_formal_curriculum_harness -v
 ```
 
-此前 `test_sentinel*.py` 共 57 项检查通过：52 项工具、provider、memory、恢复与隔离检查，另 5 项实际 CLI／worker 集成。正式集成覆盖超长候选拒绝与修订、训练门槛、6 个真实 native 任务执行、丢失外层返回后的同 run 恢复、扩池后第二个独立 run 以及缺额池拒绝准入；最终测试未打开。模型与语义审查均为明确替身，不能作为真实模型效果证据。当前另有 65 项 curriculum 纯算子／调用方回归；原始单轮诊断测试仍使用明确源失败夹具，采集和正式评分测试则执行真实工具与 native verifier。TRACE 扩展的 22 项检查与原始留出评测见[对应记录](TRACE.zh-CN.md#验证边界)。
-
 动作输出 schema 进一步约束工具动作必须带名称且不能同时说话，message/finish 必须带非空文本且没有工具参数。执行器仍检查实际动作；无效输出不会伪造任务失败。`TextCalls` 的基础指令明确区分模型返回的结构化动作与 SDK 原生工具，避免复用 IFEval 的禁用工具措辞；原生工具仍关闭，所有实际 retail 执行仍在调用方。
 
-默认零售提示允许在完成目标或无法继续时，用真实的最终回复结束对话。`finish` 仅表示该次交互结束，是否通过仍由原任务的 native DB、身份／授权检查和语义政策审查共同决定。跑满步数而没有结束、基础设施未知或无效动作继续保持未评分，不转换成已完成失败。提示修改不回写任何冻结实验的初始 harness 或结果。
+默认零售提示允许在完成目标或无法继续时，用真实的最终回复结束对话。`finish` 仅表示该次交互结束，是否通过仍由原任务的 native DB、身份／授权检查和语义政策审查共同决定。跑满步数而没有结束、基础设施未知或无效动作继续保持未评分，不转换成已完成失败。
 
-真实接口检查确认服务端禁止根节点 `anyOf`。动作分支因此放在对象的 `action` 属性内，retail 对话及 Agent-R 执行处直接取出该值；原始模型回执保存整个对象，实际工具轨迹格式保持不变。根级 schema 被拒绝的请求保留为接口错误，不计为任务失败或零用量。
-
-嵌套格式修复后，SENTINEL／Agent-R／CoEvolve／Self-Direction 及正式模型桥接合计 114 项检查通过，另 1 项可选真实 MiniLM 检查跳过。包括真实 CLI／worker、CPU 工具执行、新旧 schema 的边界和基础指令变化后拒绝重用原调用键；模型均为明确替身。[独立真实接口检查](../../research/retail-action-interface-2026-11-20/README.zh-CN.md)有 1 个完成的逻辑 turn、27,587 tokens，实际执行一次 CPU 只读工具；此前根级 schema 的 400 请求保留，用量未知。这不是任务成功率或数据策略效果证据。
+动作 schema 使用对象的 `action` 属性容纳不同动作。Retail 和 Agent-R 读取该属性并执行动作，模型回执保留完整响应。
 
 CI 的 `Curriculum / tool environments CPU` 作业安装固定 Tau2、构建 Node CLI，并运行 `test_sentinel*.py`，启用正式 runtime 集成；未安装可选依赖时只运行纯采样检查，跳过 native 集成，不把跳过项当作通过。
-
-[首版真实模型接入记录](../../research/sentinel-retail-2026-11-20/README.zh-CN.md)：冻结源码 `03c8f4d66`，11 次 `gpt-6-astra` 调用、154,167 tokens，生成一条待准入任务，离线重放未新增调用。该首版原始失败为明确夹具，不能声称真实源失败采集或收益；须在原冻结版本验证。
-
-[实际 solver 与记忆探针](../../research/sentinel-retail-2026-11-20-v2/README.zh-CN.md)：冻结源码 `9d7a3e4c8`，正常 harness 的实际样本成功，明确提前结束的诊断对照实际失败。失败驱动生成 1 条候选，执行校准通过，但语义审查拒绝；记忆正常传递，混合池报告生成来源缺额且不补齐。23 次完成调用有 332,115 tokens；另 1 次容量失败单独保留并确认终态，随后在剩余预算内作一次明确恢复，全尝试 token 总数未知。导出后工具与决定重放一致、无新增模型请求。两份归档均附上游 MIT 许可，需使用各自冻结源码复核。该诊断对照不代表自然失败率或收益；retail 的真实模型搜索效果与 mastery 效果仍待验收。
-
-[三组对照入口的真实运行 V3](../../research/sentinel-retail-2026-11-20-v3/README.zh-CN.md)：冻结 `6d3959e4f`，正常初始 harness、5 条自编且已执行校准的任务。原始请求因 429 失败，唯一一次剩余配额内恢复随后超时并核实为 `interrupted`；合计 9 次提交、7 份完成回执及 127,163 已知 tokens，全尝试用量未知。未完成任何任务评分，没有开始生成、搜索或最终测试；不能据此评价 failure 数据收益。两段轨迹、全部完成回执和下一次提交输入已离线重放，四项篡改反证检查通过，无新增模型调用。
-
-[V4 动作合同中止](../../research/sentinel-retail-2026-11-20-v4/README.zh-CN.md)：冻结 `52d720227`，每个生成组在提交前预定无条件执行三次尝试，实际尚未进入生成。43 次调用全部完成、990,092 tokens，模型空 `finish` 被执行器拒绝；22 步前缀、全部回执与原异常已零调用重放。没有完整任务分数和有效对照。后续合同修复不会回写此次结果。

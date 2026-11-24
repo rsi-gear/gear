@@ -25,7 +25,7 @@ Gear 的模型训练独立于 harness 进化状态，通过固定 harness 和数
 
 新建自动实验可使用 `gear training iterate SPEC --config CONTROLLER` 一次启动多轮，随后用 `iterate EXP` 协调原持久意图、`pause EXP`/`resume EXP` 控制整个实验。需在创建时冻结 iteration 策略、全实验训练 schedule 和受管 profile 授权；原单轮实验不会自动升级。配置工具、恢复限制和后续真实验收见[无人值守迭代](unattended-iteration.zh-CN.md)。
 
-DiagEvo 的双模型交替作业使用 `python -m gear.training diagevo run PLAN --directory ROOT --config CONTROLLER`；复用原生单作业 controller，并在调用方管理两个模型与跨轮预算。[配置、暂停／恢复及验证边界](diagevo.zh-CN.md#多轮调用方与命令入口)单独记录。curriculum 本版本不做 GPU 训练，此入口保留 CPU 集成证据，实际 GPU 训练列后续；固定权重的真实 LLM 验证使用[正式 harness 对照](../../examples/curriculum-harness/FORMAL.zh-CN.md)。
+DiagEvo 的双模型交替作业使用 `python -m gear.training diagevo run PLAN --directory ROOT --config CONTROLLER`，复用原生单作业 controller，由调用方管理两个模型与跨轮预算。[作业配置与暂停／恢复](diagevo.zh-CN.md#多轮调用方与命令入口)。本版的真实 LLM 对照固定模型权重，通过搜索改进 harness。[运行对照示例](../../examples/curriculum-harness/FORMAL.zh-CN.md)
 
 ## 边界与身份
 

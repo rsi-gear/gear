@@ -38,7 +38,6 @@ class ActionContractTests(unittest.TestCase):
         self.assertIn("action", ACTION_SCHEMA["required"])
 
     def test_empty_finish_and_mixed_actions_are_rejected_before_execution(self):
-        # Exact response that stopped the real V4 study, plus ambiguous shapes.
         empty_finish = {"kind": "finish", "name": "", "arguments_json": "{}", "text": ""}
         for response in (
             empty_finish,

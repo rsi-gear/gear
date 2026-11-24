@@ -93,7 +93,7 @@ PYTHONPATH=python /path/to/python examples/curriculum-harness/selfdirection_reta
 
 ## 验证与效果范围
 
-[测试](../../python/tests/test_selfdirection_retail.py)检查真实 Tau2 工具和 native DB 结果，LLM 与默认 embedding 是明确 fixture。检查范围包括生成／语义筛选、过程监督合同、命中与未命中、跨轮 registry、原始基线和重试状态、公开材料隔离、clean-base 归因、不完整与未知状态、预算、中断恢复、篡改检测及无 SDK CLI 重放。CPU CI 运行这些检查；本地执行不代表远端 CI 已运行。
+[测试](../../python/tests/test_selfdirection_retail.py)检查真实 Tau2 工具和 native DB 结果，LLM 与默认 embedding 是明确 fixture。检查范围包括生成／语义筛选、过程监督合同、命中与未命中、跨轮 registry、原始基线和重试状态、公开材料隔离、clean-base 归因、不完整与未知状态、预算、中断恢复、篡改检测及无 SDK CLI 重放。CPU CI 运行这些检查。
 
 ```sh
 GEAR_SENTINEL_TAU2_PATH=/tmp/gear-sentinel-tau2 PYTHONPATH=python \
@@ -102,9 +102,5 @@ GEAR_SENTINEL_TAU2_PATH=/tmp/gear-sentinel-tau2 PYTHONPATH=python \
 ```
 
 安装上述 CPU 依赖后，增加 `GEAR_SELFDIRECTION_MINILM=/tmp/gear-selfdirection-minilm` 可执行真实 MiniLM 检查，包括重复编码一致、不同目标相似度、参数无梯度且位于 CPU、超长输入拒绝。
-
-本地已通过 15 项调用方／检索检查，并在独立依赖环境通过 1 项真实 CPU MiniLM 检查。默认 retail 环境未装 embedding 依赖，因此其可选 MiniLM 项跳过；该项已单独实际运行，未将跳过计为通过。
-
-同轮通过既有 65 项 curriculum、22 项 Agent-R／正式搜索和 57 项 retail 回归，合计 160 项实际通过检查。Ruff、格式、依赖边界、48 个本地文档链接和 CI YAML 检查通过。本阶段没有新增真实 LLM 调用；检查中的模型响应仍为明确替身。
 
 模型替身下的原题修复仅证明材料实际进入调用并通过执行检查。真实 LLM 修复率、未见任务收益、历史回归及单位成本收益仍待验收；本入口未执行 GPU 训练或论文的 LoRA 加载／训练流程。

@@ -1,8 +1,8 @@
 # DiagEvo 课程规则的当前接入
 
-`gear.training.recipes.diagevo.DiagEvoPolicy` 已实现 DiagEvo 的投票筛选、频率调度和状态更新规则，`gear.training.recipes.diagevo_memory.DiagEvoDiagnostician` 提供诊断、检索筛选及节点归并组件。challenger 与 solver 的四阶段入口已将奖励、已消费失败和轮末记忆绑定到原生提交。`diagevo_run.evolve` 与 `python -m gear.training diagevo` 进一步串联双模型交替作业、新题构造、记忆反馈、跨轮预算和暂停／恢复。实际 controller、Hitch 编译器及 native driver 的两轮链路已通过 CPU 集成；训练 actor、optimizer 状态、评测服务和本组诊断 SDK 消息仍为替身。独立的 Codex／BGE 记忆后端已有真实调用证据。真实 GPU 更新、双模型效果实验和论文规模验证仍未完成，也未在 `gear.algorithms` 中宣称完整论文复现。
+`gear.training.recipes.diagevo.DiagEvoPolicy` 实现 DiagEvo 的投票筛选、频率调度和状态更新规则，`gear.training.recipes.diagevo_memory.DiagEvoDiagnostician` 提供诊断、检索筛选及节点归并组件。challenger 与 solver 的四阶段入口将奖励、已消费失败和轮末记忆绑定到原生提交。`diagevo_run.evolve` 与 `python -m gear.training diagevo` 串联双模型交替作业、新题构造、记忆反馈、跨轮预算和暂停／恢复。
 
-版本范围（2026-11-20 更新）：**本版本不做 GPU 训练。** 本文保留已有规则、调用入口及 CPU／真实推理证据，GPU 训练、节点部署、跨节点训练制品准备和论文规模证据保留列为后续工作。下方 `diagevo run` 是训练作业入口，不是本版固定权重的 harness 实验入口；本版真实 LLM 对照使用[正式 harness 示例](../../examples/curriculum-harness/FORMAL.zh-CN.md)，无需 GPU controller 配置。
+本版的真实 LLM 对照保持模型权重固定，运行方式见[正式 harness 示例](../../examples/curriculum-harness/FORMAL.zh-CN.md)。下文的 `diagevo run` 是独立的训练作业入口。GPU 训练和跨节点部署留待后续版本。
 
 规则依据 [DiagEvo 第 2 节及附录 E](https://arxiv.org/html/2609.00768v2#S2)，默认构造样本数 12、优化组大小 8；绝对置信度区间为 [0.25, 0.75]，相对阈值 1.6，晋级阈值 0.7，探索系数 0.5。所有参数进入现有 `Module` 描述，可重建和替换，不在 `curriculum` 增加专用分支。
 
@@ -55,7 +55,7 @@
 
 builder 从这些捕获和分类重新构造投票、计算整批奖励，调用现有 `seal_batch` 返回原生 batchRef。token、mask、logprob、policyVersion 及原 feedback 均保留；新奖励单独记录 `rewardSource`、`originalVerifierReward`、`curriculumRewardRef`，后者绑定完整输入、奖励、源码身份及实际依赖版本。训练调用方将 batchRef 登记到原 lease 的 ledger，再按已有 `grpo-dataset` 合同交给 `SlimeModelUpdater`。此处没有新 adapter 或另一个 updater，也没有改写 verifier 的原始奖励。
 
-当前要求 v2 `agent-grpo-v1`、`zeroVarianceGroup="keep"`、与奖励一致的 group size，以及原生已支持的 `topP=1`。builder 本身不运行模型、不关闭或重开 lease，也不完成两模型作业调度。测试证明已绑定的数据能封存为原生批次，不等于 Slime 已执行更新或 GPU 数值已验收。
+当前要求 v2 `agent-grpo-v1`、`zeroVarianceGroup="keep"`、与奖励一致的 group size，以及原生已支持的 `topP=1`。builder 负责封存原生批次，模型执行、lease 管理和双模型作业调度由调用方负责。
 
 ## 数学答案分类后端
 
@@ -74,8 +74,6 @@ builder 从这些捕获和分类重新构造投票、计算整批奖励，调用
 整组问题与数量绑定稳定 group key，各槽位有派生 CPU 种子；HF 推理在主线程中保存并恢复 CPU RNG，不重新设置 CUDA RNG。已完成结果直接复用；本地前向计算中断后允许重算，逻辑槽位配额不会重复增加，但不能据此宣称物理推理次数或 CPU 成本 exactly-once。默认每槽生成软期限 300 秒，在生成步之间检查，不覆盖权重加载，也不是独立进程的硬期限。截断输出也保存，原 key 再次调用仍拒绝，不能自动换成另一份回答。
 
 返回的 `RawTrajectory` 记录真实本地推理事实；其中反馈只检查文本生成完成，`correctnessAssessed=false`，reward=0 不表示数学错误或正确。它们用于投票／诊断，没有 native train lease，不能直接作为当前 solver 的 GRPO 梯度批次。`runtimeInstanceId` 明确表示冻结模型和配置的逻辑本地实例，恢复不宣称原进程仍存活。
-
-[预训练模型检查](../../research/diagevo-solver-2026-11-20/README.zh-CN.md)使用固定 revision 的 SmolLM2-135M-Instruct。V1 在 256 tokens 截断并按合同拒绝；V2 仅将上限扩为 1024，四份响应均到 EOS，原 key 的前 256 个 token 和 logprob 与 V1 完全一致，重放不加载模型。但四份回答均缺少最终 boxed 答案，被分类为四个独立 `unparsed`，没有形成数学正确性或训练收益证据。
 
 ## Solver 课程与已提交失败材料
 
@@ -133,7 +131,7 @@ builder 从这些捕获和分类重新构造投票、计算整批奖励，调用
 
 数据阶段先核对 native ledger 的关闭 lease、更新前权重、完整采样组、任务准入及精确 prompt，再对格式有效的问题实际采样冻结 solver。Math-Verify 绑定其原响应；现有 challenger builder 重算质量奖励，保留原 challenger token、mask、logprob 和 verifier 反馈，并交给原 updater。已完成但格式无效的问题保留为零奖励槽位；全批无有效问题时不运行 solver，不伪造回答，也不丢弃整个零方差组。
 
-这个入口不更换 native actor：可训练 challenger 继续由 Slime 管理，冻结 solver 在独立的本地 HF 实例中执行。当前 solver 实现仅使用 CPU，尚未验收大模型显存、独立 GPU 部署或论文规模吞吐。两轮集成测试中真实执行 tiny HF forward、HTTP 捕获、SQLite ledger、数学分类及原生数据预处理，Slime actor／优化器／checkpoint 是显式替身。三处中断验证分别覆盖 solver 回执、已封存批次和训练提交丢失返回，不代表真实 GPU 数值更新已经通过。
+可训练 challenger 由 Slime 管理，冻结 solver 在独立的本地 HF 实例中使用 CPU 执行。中断恢复依赖 solver 回执、已封存批次和训练提交。
 
 ## 更新后独立采样与制品关联
 
@@ -169,7 +167,7 @@ generationUsage 单列新题生成的本地调用数、输入／输出 tokens �
 
 模型输入直接取自构造阶段的已验证请求，保留 system 指令和 user 问题，不追加写文件提示。Hitch 编译器生成真实 package/task 身份和 `candidate_input`；可信 worker 导出并在独立 verifier 中恢复 `/hitch-evidence/final-response.json`。本任务 verifier 的 `completion` 只表示规范响应完整成功，错误数学答案和空字符串仍可能是完整响应。Math-Verify／多数投票另行生成原生训练奖励，标签来源始终为 `majority_vote`，不表示数学真值。
 
-`task_options` 要求显式提供 `sourceLicense`、固定到 OCI digest 的 `environmentImage`／`verifierImage`、`agentTimeoutSeconds`、`setupTimeoutSeconds`、`verifierTimeoutSeconds` 和 `maxResponseBytes`。环境镜像须支持实际 Hitch model-call 运行时，verifier 镜像须包含 Python 与 bash；本次 CPU 验证没有拉取或运行镜像。Hitch package publication 保留 `training_eligible=false`，不以编译成功授予训练权限；Gear 的精确捕获授权分别来自原 challenger train 范围和 solver 模板。
+`task_options` 要求显式提供 `sourceLicense`、固定到 OCI digest 的 `environmentImage`／`verifierImage`、`agentTimeoutSeconds`、`setupTimeoutSeconds`、`verifierTimeoutSeconds` 和 `maxResponseBytes`。环境镜像须支持 Hitch model-call 运行时，verifier 镜像须包含 Python 与 bash。Hitch package publication 保留 `training_eligible=false`。Gear 的精确捕获授权分别来自原 challenger train 范围和 solver 模板。
 
 作业模板须已封存 solver `trainer.script`，只允许可选 `scriptConfig.memoryUpdate`；函数填入 `constructionRef` 并替换 train 分区。dev、held-out、评测策略、参考模型、部署和本作业预算均保持模板原值。起始模型、采样和模板选项必须与构造 solver 一致。多轮调用方先在准入前分配本作业模板的预算，并维护跨轮总量；新实验不重置总预算。
 
@@ -353,49 +351,9 @@ python -m gear.training diagevo resume plan.json --directory run-directory --con
 
 这仍是训练调用方中的函数，没有增加 curriculum adapter 或通用执行协议。solver factory 的 `memoryUpdate` 已负责本作业 native ledger 校验及最终模型产物中的记忆关联。独立调用该函数时，调用方仍须认证提交来源并处理引用传输；多轮入口已串联下一轮作业创建。
 
-[真实后端记录](../../research/diagevo-memory-2026-11-20/README.zh-CN.md)使用 `gpt-6-astra` 与固定 revision 的 `BAAI/bge-small-en-v1.5`：第二版执行 5 个诊断 turn、4 次 embedding，在回执保存前注入中断后读取原 turn 完成恢复，断开诊断 client 后重放得到相同制品。第一版因 JSON 字段顺序导致恢复校验中止，其 1 个 turn 单独保留；两版合计 64,526 原生 tokens。BGE small 是本次实现选择，不宣称等于论文配置；solver 响应、actor 状态和提交为明确标识的 CPU fixture，训练步数为零，不能据此声称训练闭环或效果提升。
-
 ## 验证与剩余接入
 
-`python/tests/test_diagevo_policy.py` 覆盖模糊多数票、过易／过难题、完整组、构造／优化分离、全部优化失败时的参考保留、频率抽样和同节点配对、被筛除题参与晋级、同轮晋级后重新激活、不完整题池与重复归因拒绝。
-
-`python/tests/test_diagevo_memory.py` 另覆盖全失败组的参考保留、同节点已知原因复现、不强制归因、全量原因筛选、余弦数值边界、最大成员分数检索、候选外 ID 拒绝、空记忆建节点与归并时状态保持。纯组件可按 `Module` 重建。
-
-`python/tests/test_diagevo_round.py` 使用明确标识的持久化测试服务覆盖整轮处理、同轮新原因去重、晋级和重新激活、重叠节点对、提取／embedding／分配／归并后回执丢失、最终提交后中断、未知结果、未提交恢复、并发所有权、预算耗尽及侧录缺失。这些测试服务不是实际 LLM 或 embedding 效果证据。
-
-`python/tests/test_diagevo_challenger.py` 使用真实 NLTK／scikit-learn 覆盖奖励峰值及截断、跨组重复惩罚、格式错误与完整分母、零／单有效问题、缺失／跨策略／复用证据拒绝、输入顺序影响和 Module 重建。
-
-`python/tests/test_diagevo_data.py` 使用明确标识的原生捕获合同 fixture，验证完整批次封存、重建一致性、原 token／mask／logprob／反馈保留、同 task 不同 prompt 拒绝、未准入任务／开放 lease／重复请求拒绝、solver 问题／指令／策略漂移、构造缺项和等价类证据覆盖。
-
-`python/tests/test_diagevo_solver.py` 另覆盖完整题池与筛选、全失败组、构造／优化捕获隔离、分类约定、消费批次和提交链、恢复父状态、空失败原文及真实记忆调用流程的衔接。
-
-`python/tests/test_diagevo_generation.py` 覆盖三种生成 prompt、更新后权重关联、旧请求换名拒绝、跨更新 solver 漂移、记忆与实际 prompt 一致性、无效新问题保留、构造响应不能复用奖励评估，以及新题池进入已提交 solver 失败材料。提交和模型状态为明确标识的 CPU 合同 fixture，不表示执行了优化器更新。
-
-`python/tests/test_diagevo_answers.py` 使用实际 Math-Verify 验证数值／符号等价、最终答案提取、未解析回答隔离、构造类别沿用及 ±1 原生奖励；另检查异常、共享软期限、非传递比较和新答案匹配多个类别时拒绝分类。
-
-`python/tests/test_diagevo_pipeline.py` 通过实际 script factory、原生 driver、回环 HTTP 捕获、SQLite ledger 和预处理跑两轮 solver 作业，并从消费提交恢复失败材料。Slime/Ray actor 与 checkpoint 为 CPU 替身。另覆盖封存后返回丢失、提交后返回丢失、任务准入和组件身份约束。
-
-`python/tests/test_diagevo_backends.py` 使用 SDK 类型化通知替身和真实 tiny BERT，检查 schema、模型身份、未知提交不重试、原 turn 恢复、JSON 字段顺序、调用配额、回执漂移、向量归一化及不截断。`python/tests/test_diagevo_backend_round.py` 用显式离线回执检查最终 checkpoint、实际输入输出关联、原生 turn 去重、用量缺失及重放。
-
-`python/tests/test_diagevo_inference.py` 使用真实 tiny causal LM，核对实际 token／logprob、权重冻结、CPU RNG 恢复、模板选项、剩余上下文预算、稳定槽位、无加载重放、本地中断、内容漂移与截断拒绝。`python/tests/test_diagevo_challenger_pipeline.py` 验证上述两轮原生 challenger 接入和三处中断，另覆盖 prompt 漂移及全无效问题。CI CPU 作业安装 `agents` 及训练依赖以运行这些测试。类型检查仍限于 `pyproject.toml` 配置的 78 个文件，不宣称覆盖全部新增原生后端文件。
-
-`python/tests/test_diagevo_fresh_pipeline.py` 用真实 tiny HF forward 生成格式有效的新题，并检查最终导出来源、重复任务的独立分组、三处返回丢失恢复、提交后的取消，以及旧权重／不完整组／复用训练捕获的拒绝。新题与使用的参数由测试夹具预先构造，原生训练 actor／优化器仍是替身，因此这些检查不证明训练带来新能力。
-
-`python/tests/test_diagevo_construction_pipeline.py` 使用真实 tiny HF 和数学分类检查独立构造捕获、完整筛除记录、空题池、配额耗尽后的重放、结果返回丢失恢复，以及模型／采样／范围漂移拒绝。两个不同作业目录共享模型节点 CAS，前一作业的课程被后一 solver 作业实际消费，并可恢复其已提交失败材料。就绪路径显式将夹具策略 `p_high` 设为 1，以接纳恒定输出 boxed 2 的小模型；这只验证交接，不代表默认难度窗口有效。第二作业请求和 native actor 是测试替身，没有验证控制器自动创建／准入任务或真实梯度更新。
-
-`python/tests/test_diagevo_memory_pipeline.py` 将 solver 实际消费的提交、数学失败材料、真实 tiny BERT 和 SDK 类型化消息替身接到模型 provenance。覆盖两次提交仅在末次更新记忆、提交／诊断回执／最终返回丢失、完整阶段重放时的回执缺失、ledger 漂移、调用后的取消、未知 turn 停止重发和缺失 usage 保留；另串联新题构造、第二 solver 作业及最终记忆。SDK 响应、原生 actor、优化器和任务请求仍为明确替身，本组没有收费模型调用，也没有真实梯度或效果证据。
-
-`python/tests/test_diagevo_text_harness.py` 单独启动真实 Hitch `model-call` 进程、run-scoped proxy 和 Gear `ExactGateway`，再用实际保存的回执通过 DiagEvo `_capture`；核对单次调用、无工具消息、幂等键、receipt ID 和原 token 保留。模型使用显式 byte-token 替身，verifier／任务准入为 fixture，不声称 Harbor 或 GPU 执行。它同时检查旧 Hitch 能力缺失和原生 factory 选用工具 harness 时提前拒绝。此前的 driver 集成用例由测试控制器直接发送 HTTP，不覆盖这一真实 runner 边界。
-
-`python/tests/test_diagevo_tasks.py` 使用实际 Hitch package 编译器、快照封存／还原和 Gear `init`／`admit` 子进程，把保留题接到真实准入请求并通过 solver factory 校验。另验证准备／创建／准入返回丢失不重复建作业、固定评测与预算保留、私有内容／family 冲突、起始模型／授权／投票漂移，以及可信最终响应导出／恢复后执行实际打包 verifier。native actor、部署元数据和容器环境仍为显式 CPU fixture，未拉取 Docker 镜像或运行 GPU。
-
-`python/tests/test_diagevo_evolution.py` 将真实 tiny HF／BERT 两作业链产生的记忆，经频次重算、下一轮调度、实际 Hitch 编译与 controller 准入交给 challenger factory。另检查无记忆首轮、固定输入重放、来源／所选 solver 漂移、未采纳作业、篡改频次及回执缺失。此前作业的采纳决定、原生 actor 和 SDK 消息是显式测试替身，本组不证明真实评测采纳或多轮 GPU 收益。
-
-`python/tests/test_diagevo_run.py` 的 13 项测试使用显式执行替身，覆盖两条模型链、第三轮保留首轮基准、准入／推进／恢复返回丢失、预算分配与拒绝重置、控制器不可用时保留暂停、外部暂停不自动恢复、固定墙钟截止、空池／拒绝停止，以及公开 CLI 的持续推进和 SIGTERM 暂停。
-
-`python/tests/test_diagevo_outer_pipeline.py` 的 3 项集成使用实际 Hitch 编译器、Gear 创建／准入命令、controller 选型与 native driver。两轮共四个作业保留实际捕获、数据批次、提交、checkpoint、构造池和记忆，第二轮请求含原 `resumeCheckpointRef`，最终提交序号为 2；controller 已采纳但返回丢失后，恢复不会重训第一作业。另用实际构造记录验证全无效新题和无保留题都会停止。tiny HF forward、数学分类和 BERT 是真实执行；Slime actor、optimizer 状态、部署、评测分数及 SDK 响应是测试替身。正常链路明确使用 `p_high=1` 的夹具策略，不能视作论文默认难度窗口或 GPU 效果证据。测试没有启动 Harbor 容器。
-
-上述两组及公开 CLI 共 19 项定向验证通过。当前 158 个 DiagEvo 用例在完整依赖环境一次运行全部通过，无跳过项；最小依赖环境为 53 个通过、105 个因缺少可选依赖或独立 Hitch checkout 而跳过。Ruff、已配置的 78 文件类型检查及依赖边界检查通过。设置以下环境变量可运行跨仓库文本合同和任务交接测试，普通 CI 未设置时会明确跳过，不计为已验收：
+配方单元测试位于 `python/tests/test_diagevo_*.py`，覆盖投票、记忆更新、来源验证和中断恢复。需要验证跨仓库文本合同和任务交接时，设置 `GEAR_DIAGEVO_HITCH_PATH` 为已构建的 Hitch checkout 再运行以下测试。
 
 ```sh
 GEAR_DIAGEVO_HITCH_PATH=/absolute/path/to/built/hitch \
@@ -403,11 +361,7 @@ PYTHONPATH=python:python/tests \
 python -m unittest test_diagevo_text_harness test_diagevo_tasks test_diagevo_evolution test_diagevo_outer_pipeline -v
 ```
 
-此前 Gear 的 46 项定向回归覆盖训练及评测的固定 harness 准入、能力缺失和实际 Python 节点部署探测。任务准入批次的 `admission-replay`、`controller-cli`、`coordinator`、`iteration` 四个文件共 50 项回归通过，覆盖并发创建、落盘后返回丢失、已完成／暂停作业重放和旧调用方式兼容；当时的 Gear 构建与 TypeScript 类型检查也通过，本批未修改 TypeScript 生产源码。Hitch 的 runner／binding 回归 16 项、远程工作图回归 4 项此前通过；后者使用真实打包、代理与 worker 协议，Harbor、Docker 和 canonical bundle 为 fixture。Python 类型检查仍仅指上述 78 文件。
-
-上一批 driver、GRPO、脚本及配方回归有 57 个通过，4 个因未设置 `GEAR_PINNED_SLIME_SOURCE` 跳过，不将这些跳过项计为已验收。
-
-多轮编排、跨轮预算和显式暂停／恢复已经接入；实际 controller、native driver 与 tiny HF／BERT 的两轮组合已验证。可靠美元成本尚未计量。真实双模型 GPU 训练、效果对照、跨节点制品准备和论文规模证据保留未完成，按本版范围列为后续工作，不要求当前提供节点配置或运行训练。CPU 替身集成和独立真实推理／记忆后端验证不替代完整 DiagEvo 或后续 GPU 实验验收。
+多轮编排支持跨轮预算与显式暂停／恢复。双模型 GPU 训练、跨节点制品准备与论文规模的效果验证属于后续工作。
 
 接入两模型更新时还有三个已核实的边界：
 

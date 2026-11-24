@@ -1,6 +1,0 @@
-Tau2 retail policy and tool schemas are included in recorded inference inputs.
-Upstream: https://github.com/sierra-research/tau2-bench
-Pinned revision: fc0055dc4e0a316c3f83133267fbd6faaa770992 (v1.0.1).
-License: MIT; see LICENSE.tau2.
-Customer databases and tasks in this archive are authored synthetic examples.
-SDK thread and turn identifiers are redacted.

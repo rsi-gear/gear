@@ -2,13 +2,7 @@
 
 这个调用方示例保持 LLM 权重不变，更新可复用的 developer prompt。它组合 `gear.curriculum` 的案例、诊断、目标选择、生成、验证与筛选算子，执行两轮反思式提示词搜索；不宣称完整复现 GEPA。模型调用、请求恢复、任务格式转换、源数据封存和评测全部在示例中，curriculum 核心不增加执行层。
 
-[2026-11-19 实测报告](../../research/curriculum-harness-2026-11-19/README.zh-CN.md)：363 次真实调用；baseline/fixed/random/failure 分别为 46/45/45/46（共 48 题）。观察到局部练习修复，但未验证到测试集提升；候选超长与开发集饱和限制了归因，报告保留完整记录。
-
-后续的 [正式 Project.refine 四组对照](FORMAL.zh-CN.md) 使用 `ReflectiveSearch`、有限修订、新来源切分和多个优化种子；本页保留先前探索实验的原始协议。
-
-[2026-11-20 正式报告](../../research/curriculum-harness-2026-11-20/README.zh-CN.md)记录了 1,475 次真实调用和三个种子。24/24 候选有效，但语言检测 RNG 未冻结影响了一次采纳，不能视为确定性验收全部通过。当前代码已固定并记录该 RNG；历史工作区应使用原冻结源码读取，不能以新代码修改其选型。本页原协议中所谓排除语言识别，仅排除了独立的语言类型，遗漏了大小写检查内部的语言检测依赖；当前修复覆盖该依赖。
-
-[第五版正式报告](../../research/curriculum-harness-2026-11-20-v5/README.zh-CN.md)已完成 1,478 次调用、24 次搜索和完整离线审计，1,424 份评测重评分及采纳决定一致。fixed/random/failure/memory 留出均值为 95.83%/97.22%/94.44%/94.44%，未观察到 failure 优势；该实验只更新 harness prompt，不更新模型权重。
+四组对照通过 `Project.refine` 接入候选约束、有限修订和多个优化种子。[正式搜索示例](FORMAL.zh-CN.md)
 
 ## 实验定义
 
@@ -18,7 +12,7 @@
 | 更新对象 | developer prompt，最多 1800 字符；不更新模型权重 |
 | 执行条件 | 每题独立会话，关闭 shell 和 web search；任何工具事件均报错 |
 | 数据与评分 | [Google 官方 IFEval](https://github.com/google-research/google-research/tree/e6890f85757dd84e27ca6df2dd30651dafad28e0/instruction_following_eval)，strict prompt accuracy 为主指标 |
-| 子集 | 至少两条可确定性验证的指令；排除语言识别和句子分段等类型，显式词数参数不超过 200；共 113 个符合条件的原始任务 |
+| 子集 | 每个任务至少包含两条可确定性验证的指令，排除语言识别和句子分段等类型，显式词数参数不超过 200 |
 | 切分 | seed `20261119`；8 train、8 dev、48 test；原始 prompt/source family 不交叉 |
 | 预算 | 两轮，每轮每组最多 8 条训练数据、一次候选提案、8 条开发评测；相同候选采纳规则 |
 | 生成不足 | 在更新任何组之前取三组有效数据数的共同最小值，确保每组学习样本数相同；不足两条则停止 |

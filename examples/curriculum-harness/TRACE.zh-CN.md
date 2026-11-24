@@ -117,7 +117,7 @@ TRACE 环境只能进入 **train**。validation/test 必须继续使用原始 re
 
 [核心测试](../../python/tests/test_curriculum_capabilities.py)验证标签矩阵、来源和算子绑定、coverage/gap 公式、重复标注一致性及未知分母。[校准与 collector 测试](../../python/tests/test_trace_calibrate.py)、[隔离测试](../../python/tests/test_trace_environment.py)和[生成调用方测试](../../python/tests/test_trace_generate.py)使用真实 CPU Docker 和 Tau2 执行，模型响应与生成代码均为显式 fixture。它们覆盖参考／负例、完整分组、语义拒绝、修订上限、付费回执恢复、离线重放和无 SDK 预检；不证明真实模型发现的能力或生成环境质量。
 
-本轮本地通过 65 项 curriculum 回归、22 项 TRACE 检查及 69 项既有 retail／CoEvolve 回归，共 156 项；执行覆盖真实 Docker、Tau2 与正式 CLI／worker，模型响应均为替身。新增 5 项混合池／正式搜索检查覆盖新 seed 内容重复、准入篡改、未知结果、恢复及原始留出评测。Ruff、依赖边界和文档本地链接检查通过；纯算子代码未改变，上一阶段 mypy 结果仍适用。离线重放会比较原始 Python 源文件字节，拒绝仅 JSON 汇总一致而执行文件已变更的制品。CPU CI 已配置相同检查和固定 digest 的 Python 镜像；本地通过不表示远端 CI 已运行。
+离线重放还核对归档的 Python 源文件字节。CPU CI 使用固定摘要的 Python 镜像执行这些检查。
 
 ```sh
 GEAR_TRACE_PYTHON_IMAGE=实际完整镜像ID \

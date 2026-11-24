@@ -99,7 +99,7 @@ PYTHONPATH=python /tmp/gear-sentinel-env/bin/python \
 
 [测试](../../python/tests/test_coevolve_retail.py)使用真实工具与 native 评分、明确的模型替身，覆盖三种信号及消融、成功来源、完整历史重放、训练范围、独立探索重置、语义拒绝、收费回执恢复、用量与配额、制品篡改拒绝、混合池，以及正式 CLI/worker 搜索后用新 harness 再收集下一轮历史。`signal` 核心合同另有轻量测试；CPU CI 同时运行这些检查。
 
-本次本地验证通过 59 项 curriculum 核心测试、69 项调用方回归和 6 项正式 worker 集成，共 134 项；其中 CoEvolve 调用方为 11 项检查加 1 项正式搜索集成。边界、lint、格式和文档本地链接检查通过。没有发起新的真实模型调用。安装上述依赖并构建 Gear 后，可以单独运行此配方的测试：
+安装依赖并构建 Gear 后，可用以下命令运行配方测试。
 
 ```sh
 GEAR_SENTINEL_TAU2_PATH=/tmp/gear-sentinel-tau2 \

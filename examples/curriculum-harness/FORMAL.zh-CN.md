@@ -4,16 +4,6 @@
 
 这是本版本不做 GPU 训练时的真实 LLM 对照入口：模型权重固定，只更新 developer prompt。调用现有模型服务，不需要训练节点或 GPU controller；模型生成、诊断和评测的实际调用成本仍需计量。
 
-[首轮正式实测与审计](../../research/curriculum-harness-2026-11-20/README.zh-CN.md)已完成，包含 1,475 次调用。离线复核发现官方大小写检查内部的语言检测未固定 RNG，影响一次候选采纳；原始结果保留。后续运行的 `verifier_policy.language_detection_seed=0` 已进入冻结身份，旧报告不因此自动获得确定性验收通过。
-
-[第二轮记录](../../research/curriculum-harness-2026-11-20-v2/README.zh-CN.md)在 532 次调用、12 个搜索 run 后中止，最终测试未开启。固定负例未能违反一个字母次数上限，导致有效参考解全部被拒；另一次生成返回了错误 JSON。当前版本使用约束相关的反例与原生结构化输出，须建立新的冻结实验，不能改写已中止运行的决定。
-
-[第三次切分](../../research/curriculum-harness-2026-11-20-v3/README.zh-CN.md)训练基线 8/8，按同一 readiness 门槛停止，未开始优化或测试。[第四版](../../research/curriculum-harness-2026-11-20-v4/README.zh-CN.md)排除此前全部 208 个来源，切分 seed 为 `20261123`，训练基线 6/8；完成八个搜索后因 failure 组仅准入一条练习而中止，359 次调用已归档，最终测试未开启。截至第四版仍未完成有效对照验收。
-
-当前 `exact-ending-v1` 渲染将固定结尾表示为有明确边界的 JSON 字符串，避免上游说明句附加的句号被误认为要求的一部分；原 `kwargs` 和官方验证器均保留。两次训练材料生成探针中，精确结尾三条全通过，字母次数限制三条仍只通过一条。该探针只验证局部修复，不证明策略效果，也不替换第四版原始响应。
-
-[第五版对照与离线复核已完成](../../research/curriculum-harness-2026-11-20-v5/README.zh-CN.md)：使用冻结提交 `139bfc533`，排除此前 256 个来源，以 seed `20261124` 切分并通过 7/8 的训练 readiness；其他预算与门槛保持不变。四组 × 三种子 × 两轮产生 24/24 个有效候选，共 1,478 次真实调用。留出均值 fixed 95.83%、random 97.22%、failure 和 memory 均为 94.44%，未观察到 failure 优势。failure 唯一采纳来自无失败时的随机回退，不能作为失败定向数据收益证据。第五版按当时冻结源码验收，不自动覆盖后续新增配方。
-
 ## 固定协议
 
 | 项目 | 设置 |
@@ -21,7 +11,7 @@
 | 更新对象 | developer prompt；1800 字符硬上限，1000 字符生成目标，最多 2 次修订；模型权重固定 |
 | 学生 / teacher | 默认 `gpt-5.6-luna` / `gpt-6-astra`，effort `low`；运行前验证实际可用性 |
 | 数据 | 固定提交的官方 IFEval strict verifiers；沿用原示例的可确定验证子集 |
-| 验证 RNG | 当前固定 language detection seed 0；原始正式实验漏项及影响见审计报告 |
+| 验证 RNG | 固定 language detection seed 为 0，并将该值纳入 verifier 身份 |
 | 生成格式 | teacher 与 Meta 使用 SDK 原生 `output_schema`；调用方限定 IFEval 领域字段，实际语义仍由校验检查 |
 | 校准 | 固定负例加按约束参数构造的反例；官方验证器必须实际拒绝非空反例，切分前检查来源可校准性 |
 | 约束表达 | `exact-ending-v1` 为固定结尾标出字符串边界，使用原冻结参数；其他约束沿用官方描述 |
@@ -65,4 +55,4 @@ PYTHONPATH=python /tmp/gear-curriculum-llm-env/bin/python \
 
 数据来自公开基准，样本较小；多个优化种子共享测试题和初始基线，不是独立数据集重复。应展示每种子的配对差异与不确定性，并允许负结果或不显著结果。该实验不预设 failure 生成必然优于随机生成。
 
-`--previous-splits` 会递归继承文件中的 `excluded_ids`，排除所有先前用过的来源，而不只是紧邻的一轮。剩余来源不足时明确停止。可显式用 `--minimum-instructions` 和 `--split-seed` 定义新的任务范围；配置冻结后不能改写，改变任务范围的研究必须单独报告，不能把其分数与旧范围直接合并。
+首次执行可以传入内容为 `{"train":[],"dev":[],"test":[]}` 的 JSON 文件。`--previous-splits` 会递归继承文件中的 `excluded_ids`，排除所有先前用过的来源，而不只是紧邻的一轮。剩余来源不足时明确停止。可显式用 `--minimum-instructions` 和 `--split-seed` 定义新的任务范围；配置冻结后不能改写，改变任务范围的研究必须单独报告，不能把其分数与旧范围直接合并。
