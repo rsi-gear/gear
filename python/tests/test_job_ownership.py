@@ -47,7 +47,7 @@ class JobOwnershipTests(unittest.TestCase):
         self.addCleanup(lambda: child.poll() is None and child.kill())
         identity = process_identity(child.pid)
         self.devices.acquire(self.owner, ["GPU-1"]); self.devices.track(self.owner, [identity], launching=True)
-        atomic_json(self.directory / "worker.json", {"incarnation": self.incarnation, "pending": False, "process": {**identity, "createdAt": identity["createdAt"] - 1}, "pid": child.pid})
+        atomic_json(self.directory / "worker.json", {"incarnation": self.incarnation, "pending": False, "process": {**identity, "createdAt": identity["createdAt"] - 1, "startTicks": identity.get("startTicks", 0) - 1}, "pid": child.pid})
         self.assertFalse(worker_alive(load(self.directory / "worker.json")))
         status = self.service.inspect(self.handle)
         self.assertEqual(status["execution"], "interrupted"); self.assertFalse(status["resourcesReleased"])

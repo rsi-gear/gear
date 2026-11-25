@@ -15,7 +15,7 @@ from gear.training.storage.content import atomic_json, digest_json, require
 from gear.training.runtime.job import JobService
 from gear.training.runtime.node import NodeService
 from gear.training.runtime.preflight import preflight
-from gear.training.runtime.recovery import process_identity, owned_alive
+from gear.training.runtime.recovery import process_identity, owned_alive, same_identity
 from gear.training.storage.ledger import Ledger
 
 
@@ -81,7 +81,7 @@ def watch(path, boundary, output, timeout):
                        'pending-update': pending.exists() and not commits,
                        'committed-update': len(commits) == 1 and not (directory / 'artifacts.body.json').exists()}[boundary]
             if reached and process is not None:
-                require(process_identity(process['pid']) == process, 'diagnostic-process-drift', 'driver identity changed')
+                require(same_identity(process, process_identity(process['pid'])), 'diagnostic-process-drift', 'driver identity changed')
                 os.kill(process['pid'], signal.SIGSTOP)
                 try:
                     # Re-observe after stopping to ensure the intended boundary

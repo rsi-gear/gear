@@ -43,7 +43,8 @@ class DeviceLeaseTests(unittest.TestCase):
         self.ledger.fence("training/job-1"); self.assertFalse(self.ledger.release("training/job-1"))
         with self.assertRaisesRegex(ContractError, "fenced"): self.ledger.track("training/job-1", [identity], launching=True)
         # A reused numeric PID does not authorize a signal to a different process.
-        stop_owned([{**identity, "createdAt": identity["createdAt"] - 1}]); self.assertIsNone(child.poll())
+        reused = {**identity, "createdAt": identity["createdAt"] - 1, "startTicks": identity.get("startTicks", 0) - 1}
+        stop_owned([reused]); self.assertIsNone(child.poll())
         child.terminate(); child.wait(timeout=5)
         self.probe.return_value = [{"device": "GPU-1", "pid": 999}]
         self.assertFalse(self.ledger.release("training/job-1"))

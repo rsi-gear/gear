@@ -15,7 +15,7 @@ import uuid
 from pathlib import Path
 
 from gear.training.contracts import TrainingConfig
-from gear.training.runtime.recovery import owned_session_alive, process_identity
+from gear.training.runtime.recovery import owned_session_alive, process_identity, same_identity
 from gear.training.runtime.script_source import loaded_loop, source_files
 from gear.training.storage.content import ContentStore, ContractError, digest_json, require
 from gear.training.storage.loop_journal import _MISSING, _bytes, _copy, _read, _write
@@ -303,7 +303,7 @@ def worker_run(directory, token):
         handle = identity["handle"]
         service.directory(handle)
         require(
-            owner.get("process") == process_identity(os.getpid()),
+            same_identity(owner.get("process"), process_identity(os.getpid())),
             "script-worker-fenced",
             "worker process differs",
         )

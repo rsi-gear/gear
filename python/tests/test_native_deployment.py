@@ -29,6 +29,7 @@ from unittest.mock import patch
 import psutil
 
 from gear.training.runtime.native_deployment import NativeDeploymentService, process_identity
+from gear.training.runtime.recovery import same_process
 from gear.training.storage.content import (
     ContentStore,
     ContractError,
@@ -289,7 +290,7 @@ class NativeSupervisorTests(unittest.TestCase):
             try:
                 current = psutil.Process(child["pid"])
                 self.assertTrue(
-                    current.create_time() != child["createdAt"]
+                    not same_process(current, child)
                     or current.status() == psutil.STATUS_ZOMBIE
                 )
             except psutil.NoSuchProcess:
